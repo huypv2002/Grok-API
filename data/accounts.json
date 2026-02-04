@@ -1,0 +1,13 @@
+{
+  "accounts": [
+    {
+      "email": "chidanguvn68c4@outlook.com",
+      "password_encrypted": "gAAAAABpgvNKBXd7acdYwRrAPPS_gFXJtoXQTIboEGEuKdEQxzSimn2Xl0uywMzbag9RYHyTGdzJdRrxXC1noefWshOuKMRS2A==",
+      "fingerprint_id": "b7232d99-f04a-41e8-9c74-312e225c173f",
+      "status": "error",
+      "cookies": null,
+      "last_login": null,
+      "error_message": "Message: Service /Users/phamvanhuy/Library/Application Support/undetected_chromedriver/undetected_chromedriver unexpectedly exited. Status code was: -9\n"
+    }
+  ]
+}
