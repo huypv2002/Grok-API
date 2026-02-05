@@ -1,28 +1,34 @@
-"""Video Generator - Browser automation for Grok video generation"""
+"""Video Generator - Browser automation for Grok video generation using zendriver"""
+import asyncio
 import time
 import re
-import ssl
 import os
-
-ssl._create_default_https_context = ssl._create_unverified_context
-
+import base64
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Callable
-import httpx
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
+from typing import Optional, Callable, Dict, Any, List, Tuple
+
 from .models import Account, VideoSettings, VideoTask
-from .browser_controller import BrowserController
+from .cf_solver import (
+    CloudflareSolver, ChallengePlatform, CF_SOLVER_AVAILABLE,
+    get_chrome_user_agent
+)
+
+try:
+    import zendriver
+    from zendriver import cdp
+    ZENDRIVER_AVAILABLE = True
+except ImportError:
+    ZENDRIVER_AVAILABLE = False
 
 IMAGINE_URL = "https://grok.com/imagine"
 OUTPUT_DIR = Path("output")
+VIDEO_DOWNLOAD_URL = "https://imagine-public.x.ai/imagine-public/share-videos/{post_id}.mp4?cache=1"
 
 
 class VideoGenerator:
     def __init__(self):
-        self.browser: Optional[BrowserController] = None
-        self.client = httpx.Client(timeout=120.0, verify=False)
+        self.solver: Optional[CloudflareSolver] = None
     
     def generate_video(
         self,
@@ -30,9 +36,22 @@ class VideoGenerator:
         prompt: str,
         settings: VideoSettings,
         on_status: Optional[Callable] = None,
-        headless: bool = False  # Default NOT headless vì Cloudflare
+        headless: bool = False
     ) -> VideoTask:
-        """Full video generation flow using browser automation"""
+        """Generate video using zendriver (single browser for everything)"""
+        return asyncio.run(self._generate_video_async(
+            account, prompt, settings, on_status, headless
+        ))
+    
+    async def _generate_video_async(
+        self,
+        account: Account,
+        prompt: str,
+        settings: VideoSettings,
+        on_status: Optional[Callable] = None,
+        headless: bool = False
+    ) -> VideoTask:
+        """Async video generation with zendriver"""
         task = VideoTask(
             account_email=account.email,
             prompt=prompt,
@@ -40,624 +59,543 @@ class VideoGenerator:
             status="creating"
         )
         
-        self.browser = BrowserController(account.fingerprint_id)
+        if not CF_SOLVER_AVAILABLE:
+            task.status = "failed"
+            task.error_message = "zendriver not installed"
+            return task
+
+        user_agent = get_chrome_user_agent()
         
         try:
-            # Step 1: Open browser (NOT headless to bypass Cloudflare)
             if on_status:
-                on_status("Opening browser...")
-            self.browser.open_browser(headless=False)  # Always visible for Cloudflare
+                on_status("🔄 Starting browser...")
             
-            # Minimize window if user wanted headless
-            if headless and self.browser.driver:
-                self.browser.driver.minimize_window()
-                if on_status:
-                    on_status("Browser minimized (background mode)")
-            
-            # Step 2: Navigate to grok.com first to set cookies
-            if on_status:
-                on_status("Setting up session...")
-            self.browser.navigate_to("https://grok.com", wait_time=3)
-            
-            # Step 3: Inject cookies
-            if account.cookies:
-                if on_status:
-                    on_status("Restoring session cookies...")
-                self.browser.set_cookies(account.cookies, ".grok.com")
-                time.sleep(1)
-                self.browser.driver.refresh()
-                time.sleep(3)
-            
-            # Step 4: Navigate to imagine page
-            if on_status:
-                on_status("Navigating to Grok Imagine...")
-            self.browser.navigate_to(IMAGINE_URL, wait_time=5)
-            
-            # Handle Cloudflare challenge
-            if on_status:
-                on_status("Checking for Cloudflare...")
-            
-            cloudflare_passed = self._handle_cloudflare(on_status, timeout=120)
-            if not cloudflare_passed:
-                task.status = "failed"
-                task.error_message = "Cloudflare challenge timeout"
-                return task
-            
-            # Check if logged in
-            current_url = self.browser.get_current_url()
-            if 'sign-in' in current_url or 'accounts.x.ai' in current_url:
-                if on_status:
-                    on_status("Session expired. Please login again.")
-                task.status = "failed"
-                task.error_message = "Session expired. Please login again."
-                return task
-            
-            time.sleep(3)
-            
-            # Step 5: Select Video mode
-            if on_status:
-                on_status("Selecting Video mode...")
-            self._select_video_mode(on_status)
-            time.sleep(2)
-            
-            # Step 6: Enter prompt
-            if on_status:
-                on_status("Entering prompt...")
-            if not self._enter_prompt(prompt, on_status):
-                task.status = "failed"
-                task.error_message = "Failed to enter prompt"
-                return task
-            time.sleep(1)
-            
-            # Step 7: Submit
-            if on_status:
-                on_status("Submitting...")
-            self._submit_prompt()
-            time.sleep(3)
-            
-            # Step 8: Wait for video to be FULLY generated
-            if on_status:
-                on_status("Waiting for video generation (this may take 2-5 minutes)...")
-            
-            # Wait for download button to appear (means video is ready)
-            video_ready = self._wait_for_download_button(on_status, timeout=600)
-            
-            if video_ready:
-                if on_status:
-                    on_status("Video ready! Clicking download...")
+            async with CloudflareSolver(
+                user_agent=user_agent,
+                timeout=60,
+                headless=headless,
+            ) as solver:
+                self.solver = solver
                 
-                # Click download button and get video URL
-                video_url = self._click_download_and_get_url(on_status)
-                
-                if video_url:
-                    task.media_url = video_url
-                    
+                # Step 1: Inject cookies
+                if account.cookies:
                     if on_status:
-                        on_status("Downloading video...")
-                    output_path = self._download_video(video_url, account.email, prompt)
+                        on_status("🍪 Injecting cookies...")
                     
-                    if output_path:
-                        file_size = os.path.getsize(output_path)
-                        if file_size < 100000:
-                            if on_status:
-                                on_status(f"Warning: File too small ({file_size} bytes)")
-                            task.status = "failed"
-                            task.error_message = "Downloaded file too small"
-                            return task
-                        
-                        task.output_path = output_path
-                        task.status = "completed"
-                        task.completed_at = datetime.now()
-                        if on_status:
-                            on_status(f"Done! Saved: {output_path}")
-                    else:
-                        task.status = "failed"
-                        task.error_message = "Download failed"
-                else:
+                    await solver.driver.get("https://grok.com/favicon.ico")
+                    await asyncio.sleep(1)
+                    
+                    for name, value in account.cookies.items():
+                        if name != 'cf_clearance':
+                            try:
+                                await solver.driver.main_tab.send(
+                                    cdp.network.set_cookie(
+                                        name=name,
+                                        value=value,
+                                        domain=".grok.com",
+                                        path="/",
+                                        secure=True,
+                                        http_only=name in ['sso', 'sso-rw'],
+                                    )
+                                )
+                            except:
+                                pass
+                
+                # Step 2: Navigate to imagine and handle Cloudflare
+                if on_status:
+                    on_status("🌐 Going to Grok Imagine...")
+                
+                await solver.driver.get(IMAGINE_URL)
+                await asyncio.sleep(3)
+                
+                # Check and solve Cloudflare
+                cf_passed = await self._handle_cloudflare(solver, on_status)
+                if not cf_passed:
                     task.status = "failed"
-                    task.error_message = "Could not get video URL"
-            else:
-                task.status = "failed"
-                task.error_message = "Video generation timeout"
-            
-            return task
-            
+                    task.error_message = "Cloudflare challenge failed"
+                    return task
+                
+                # Check login status
+                current_url = await solver.driver.main_tab.evaluate("window.location.href")
+                if 'sign-in' in current_url or 'accounts.x.ai' in current_url:
+                    task.status = "failed"
+                    task.error_message = "Session expired. Please login again."
+                    return task
+                
+                await asyncio.sleep(2)
+                
+                # Step 3: Select Video mode
+                if on_status:
+                    on_status("🎬 Selecting Video mode...")
+                print(">>> Step 3: Selecting Video mode...")
+                await self._select_video_mode(solver, on_status)
+                await asyncio.sleep(2)
+                
+                # Step 4: Enter prompt
+                print(f">>> Step 4: Entering prompt: {prompt[:40]}...")
+                if on_status:
+                    on_status(f"✏️ Entering prompt: {prompt[:40]}...")
+                if not await self._enter_prompt(solver, prompt, on_status):
+                    task.status = "failed"
+                    task.error_message = "Failed to enter prompt"
+                    return task
+                
+                await asyncio.sleep(1)
+                
+                # Step 5: Submit
+                print(">>> Step 5: Submitting...")
+                if on_status:
+                    on_status("📤 Submitting...")
+                await self._submit_prompt(solver, on_status)
+                await asyncio.sleep(3)
+                
+                # Step 6: Wait for post ID
+                print(">>> Step 6: Waiting for post ID...")
+                if on_status:
+                    on_status("⏳ Waiting for post ID...")
+                
+                # Debug: save screenshot
+                try:
+                    screenshot_data = await solver.driver.main_tab.send(cdp.page.capture_screenshot())
+                    if screenshot_data:
+                        debug_path = Path("data") / f"debug_zendriver_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                        debug_path.parent.mkdir(exist_ok=True)
+                        with open(debug_path, 'wb') as f:
+                            f.write(base64.b64decode(screenshot_data))
+                except:
+                    pass
+                
+                post_id = await self._wait_for_post_id(solver, on_status, timeout=30)
+                print(f">>> Post ID result: {post_id}")
+                
+                if not post_id:
+                    task.status = "failed"
+                    task.error_message = "Could not get post ID"
+                    return task
+                
+                task.post_id = post_id
+                task.media_url = VIDEO_DOWNLOAD_URL.format(post_id=post_id)
+                
+                print(f">>> Video URL = {task.media_url}")
+                if on_status:
+                    on_status(f"✅ Post ID: {post_id}")
+                
+                # Mark as completed immediately - video will be downloaded from History tab
+                task.status = "completed"
+                task.completed_at = datetime.now()
+                if on_status:
+                    on_status(f"✅ Video queued! Post ID: {post_id}")
+                    on_status("📋 Download from History tab when ready")
+                
+                # Navigate back to /imagine for next video immediately
+                print(">>> Navigating back to /imagine...")
+                if on_status:
+                    on_status("🔄 Ready for next video...")
+                await solver.driver.get(IMAGINE_URL)
+                await asyncio.sleep(2)
+                
+                return task
+                
         except Exception as e:
             task.status = "failed"
             task.error_message = str(e)
             if on_status:
-                on_status(f"Error: {e}")
+                on_status(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
             return task
-        finally:
-            if self.browser:
-                self.browser.close_browser()
-    
-    def _select_video_mode(self, on_status: Optional[Callable] = None) -> None:
-        """Select Video mode from dropdown"""
-        if not self.browser or not self.browser.driver:
-            return
+
+    async def _handle_cloudflare(
+        self, solver: CloudflareSolver, on_status: Optional[Callable]
+    ) -> bool:
+        """Handle Cloudflare challenge"""
+        html = await solver.driver.main_tab.get_content()
+        cf_indicators = ['Just a moment', 'Checking your browser', 'challenge-platform', 'cf-turnstile']
         
-        try:
-            # Click model selector
-            model_btn = self.browser.find_element('#model-select-trigger')
-            if model_btn:
-                model_btn.click()
-                time.sleep(1)
-                
-                # Find and click Video option
-                video_opts = self.browser.find_elements('//span[contains(text(), "Video")]', By.XPATH)
-                for opt in video_opts:
-                    try:
-                        opt.click()
-                        if on_status:
-                            on_status("Video mode selected")
-                        time.sleep(0.5)
-                        return
-                    except:
-                        continue
-        except Exception as e:
+        if not any(ind in html for ind in cf_indicators):
             if on_status:
-                on_status(f"Mode selection: {e}")
-    
-    def _handle_cloudflare(self, on_status: Optional[Callable], timeout: int = 120) -> bool:
-        """Handle Cloudflare Turnstile challenge"""
-        if not self.browser or not self.browser.driver:
-            return False
+                on_status("✅ No Cloudflare challenge")
+            return True
         
-        start = time.time()
+        if on_status:
+            on_status("🔐 Cloudflare detected, solving...")
         
-        while time.time() - start < timeout:
-            page_source = self.browser.get_page_source()
-            current_url = self.browser.get_current_url()
-            
-            # Check if Cloudflare challenge is present
-            if 'Just a moment' not in page_source and 'challenge' not in current_url:
-                if on_status:
-                    on_status("Cloudflare passed!")
-                return True
-            
+        # Set user agent metadata
+        await solver.set_user_agent_metadata(await solver.get_user_agent())
+        
+        # Detect challenge type
+        challenge = await solver.detect_challenge()
+        
+        if challenge:
             if on_status:
-                elapsed = int(time.time() - start)
-                on_status(f"Waiting for Cloudflare... ({elapsed}s) - Please solve if needed")
-            
-            # Try to click the checkbox
+                on_status(f"🔐 Challenge type: {challenge.value}")
             try:
-                # Find Cloudflare iframe
-                iframes = self.browser.find_elements('iframe')
-                for iframe in iframes:
-                    src = iframe.get_attribute('src') or ''
-                    if 'challenges.cloudflare.com' in src or 'turnstile' in src:
-                        # Switch to iframe and click
-                        self.browser.driver.switch_to.frame(iframe)
-                        try:
-                            checkbox = self.browser.find_element('input[type="checkbox"]')
-                            if checkbox:
-                                checkbox.click()
-                        except:
-                            pass
-                        self.browser.driver.switch_to.default_content()
-                        break
-            except:
-                pass
-            
-            time.sleep(3)
+                await solver.solve_challenge()
+            except Exception as e:
+                if on_status:
+                    on_status(f"⚠️ Solve error: {e}")
         
+        # Wait for cf_clearance
+        for i in range(60):
+            cookies = await solver.get_cookies()
+            if solver.extract_clearance_cookie(cookies):
+                if on_status:
+                    on_status("✅ Cloudflare passed!")
+                return True
+            await asyncio.sleep(1)
+            if i % 10 == 0 and on_status:
+                on_status(f"⏳ Waiting... ({i}s)")
+        
+        if on_status:
+            on_status("❌ Cloudflare timeout")
         return False
     
-    def _enter_prompt(self, prompt: str, on_status: Optional[Callable] = None) -> bool:
-        """Enter prompt in editor"""
-        if not self.browser or not self.browser.driver:
-            return False
-        
+    async def _select_video_mode(
+        self, solver: CloudflareSolver, on_status: Optional[Callable]
+    ) -> None:
+        """Select Video mode in the UI - improved version"""
         try:
-            # Try multiple selectors for the editor
-            selectors = [
-                'div.tiptap.ProseMirror',
-                'div[contenteditable="true"]',
-                '.ProseMirror',
-                'div[data-placeholder]'
-            ]
+            print("🎬 [VIDEO MODE] Starting video mode selection...")
             
-            editor = None
-            for sel in selectors:
-                editor = self.browser.find_element(sel)
-                if editor:
+            # Wait for page to fully load - wait for trigger button to appear
+            trigger_info = None
+            for wait_attempt in range(10):
+                await asyncio.sleep(1)
+                trigger_info = await solver.driver.main_tab.evaluate("""
+                    (function() {
+                        var trigger = document.querySelector('#model-select-trigger');
+                        if (trigger) {
+                            var rect = trigger.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                return {
+                                    x: rect.x + rect.width / 2,
+                                    y: rect.y + rect.height / 2,
+                                    found: true,
+                                    text: trigger.textContent.substring(0, 30)
+                                };
+                            }
+                        }
+                        return {found: false, attempt: """ + str(wait_attempt) + """};
+                    })()
+                """)
+                if trigger_info and trigger_info.get('found'):
                     break
+                print(f"   Waiting for trigger... attempt {wait_attempt + 1}")
             
-            if editor:
-                # Click to focus
-                editor.click()
-                time.sleep(0.5)
-                
-                # Clear existing content
-                self.browser.execute_script("arguments[0].innerHTML = ''", editor)
-                time.sleep(0.3)
-                
-                # Type prompt
-                editor.send_keys(prompt)
-                time.sleep(0.5)
-                
-                if on_status:
-                    on_status(f"Prompt entered: {prompt[:40]}...")
-                return True
-            else:
-                if on_status:
-                    on_status("Could not find editor element")
-                return False
-                
-        except Exception as e:
-            if on_status:
-                on_status(f"Prompt error: {e}")
-            return False
-    
-    def _submit_prompt(self) -> None:
-        """Click submit button"""
-        if not self.browser or not self.browser.driver:
-            return
-        
-        try:
-            # Wait for submit button to be enabled
-            time.sleep(1)
+            print(f"   Trigger info: {trigger_info}")
             
-            # Find submit button
-            submit = self.browser.find_element('button[type="submit"]')
-            if submit:
-                # Check if button is enabled
-                is_disabled = submit.get_attribute('disabled')
-                if is_disabled:
-                    time.sleep(2)  # Wait more
-                submit.click()
-            else:
-                # Try pressing Enter
-                self.browser.send_keys(Keys.ENTER)
-        except Exception as e:
-            print(f"Submit error: {e}")
-    
-    def _wait_for_video_complete(self, on_status: Optional[Callable], timeout: int = 600) -> Optional[str]:
-        """Wait for video to be FULLY generated"""
-        if not self.browser or not self.browser.driver:
-            return None
-        
-        start = time.time()
-        last_url = None
-        stable_count = 0
-        check_count = 0
-        
-        while time.time() - start < timeout:
-            try:
-                check_count += 1
-                video_url = self._find_video_url()
+            # Click trigger if found
+            if trigger_info and trigger_info.get('found'):
+                x, y = trigger_info['x'], trigger_info['y']
                 
-                if video_url:
-                    if on_status:
-                        on_status(f"Found video URL, verifying...")
+                # Use JS click first (more reliable)
+                await solver.driver.main_tab.evaluate("""
+                    (function() {
+                        var trigger = document.querySelector('#model-select-trigger');
+                        if (trigger) trigger.click();
+                    })()
+                """)
+                print(f"   JS click on trigger")
+                await asyncio.sleep(1.5)
+            
+            # Check menu state
+            menu_state = await solver.driver.main_tab.evaluate("""
+                (function() {
+                    var menu = document.querySelector('[data-radix-menu-content][data-state="open"]') ||
+                               document.querySelector('[role="menu"][data-state="open"]');
+                    if (menu) {
+                        var items = menu.querySelectorAll('[role="menuitem"]');
+                        return {open: true, itemCount: items.length};
+                    }
+                    return {open: false};
+                })()
+            """)
+            print(f"   Menu state: {menu_state}")
+            
+            # If menu not open, try CDP click
+            if not menu_state.get('open') and trigger_info and trigger_info.get('found'):
+                print("   Menu not open, trying CDP click...")
+                x, y = trigger_info['x'], trigger_info['y']
+                await solver.driver.main_tab.send(cdp.input_.dispatch_mouse_event(
+                    type_="mousePressed", x=x, y=y,
+                    button=cdp.input_.MouseButton.LEFT, click_count=1
+                ))
+                await asyncio.sleep(0.1)
+                await solver.driver.main_tab.send(cdp.input_.dispatch_mouse_event(
+                    type_="mouseReleased", x=x, y=y,
+                    button=cdp.input_.MouseButton.LEFT, click_count=1
+                ))
+                await asyncio.sleep(1.5)
+                
+                menu_state = await solver.driver.main_tab.evaluate("""
+                    (function() {
+                        var menu = document.querySelector('[data-radix-menu-content][data-state="open"]') ||
+                                   document.querySelector('[role="menu"][data-state="open"]');
+                        return menu ? {open: true} : {open: false};
+                    })()
+                """)
+                print(f"   After CDP click: {menu_state}")
+
+            # Step 2: Find and click Video option
+            print("🎬 [VIDEO MODE] Step 2: Finding Video option...")
+            
+            video_option = await solver.driver.main_tab.evaluate("""
+                (function() {
+                    // Find all menu items
+                    var items = document.querySelectorAll('[role="menuitem"]');
                     
-                    # Verify video is ready (has content)
-                    if self._verify_video_ready(video_url):
-                        if on_status:
-                            on_status("Video ready!")
-                        return video_url
-                    
-                    # Track URL stability - if same URL appears 3 times, try download
-                    if video_url == last_url:
-                        stable_count += 1
-                        if stable_count >= 3:
-                            if on_status:
-                                on_status("Video URL stable, downloading...")
-                            return video_url
-                    else:
-                        stable_count = 0
-                        last_url = video_url
-                else:
-                    # Check if still generating
-                    loading = self._check_loading_state()
-                    elapsed = int(time.time() - start)
-                    
-                    if on_status:
-                        if loading:
-                            on_status(f"Generating video... ({elapsed}s)")
-                        elif check_count % 5 == 0:
-                            on_status(f"Waiting for video... ({elapsed}s)")
-                    
-            except Exception as e:
-                if on_status:
-                    on_status(f"Check error: {str(e)[:30]}")
-            
-            time.sleep(3)  # Check every 3 seconds
-        
-        return None
-    
-    def _wait_for_download_button(self, on_status: Optional[Callable], timeout: int = 600) -> bool:
-        """Wait for download button to appear (means video is ready)"""
-        if not self.browser or not self.browser.driver:
-            return False
-        
-        start = time.time()
-        
-        while time.time() - start < timeout:
-            try:
-                # Look for download button with aria-label="Tải xuống" or "Download"
-                download_selectors = [
-                    'button[aria-label="Tải xuống"]',
-                    'button[aria-label="Download"]',
-                    'button[aria-label*="download" i]',
-                    'button[aria-label*="tải" i]',
-                    'button svg.lucide-download',
-                    'button:has(svg[class*="download"])',
-                ]
-                
-                for sel in download_selectors:
-                    try:
-                        btn = self.browser.find_element(sel)
-                        if btn and btn.is_displayed():
-                            if on_status:
-                                on_status("Download button found!")
-                            return True
-                    except:
-                        continue
-                
-                # Also check for video element
-                videos = self.browser.find_elements('video')
-                for v in videos:
-                    try:
-                        src = v.get_attribute('src')
-                        if src and '.mp4' in src:
-                            if on_status:
-                                on_status("Video element found!")
-                            return True
-                    except:
-                        continue
-                
-                elapsed = int(time.time() - start)
-                if on_status and elapsed % 10 == 0:
-                    on_status(f"Generating video... ({elapsed}s)")
-                    
-            except Exception as e:
-                pass
-            
-            time.sleep(3)
-        
-        return False
-    
-    def _click_download_and_get_url(self, on_status: Optional[Callable] = None) -> Optional[str]:
-        """Click download button and get video URL"""
-        if not self.browser or not self.browser.driver:
-            return None
-        
-        try:
-            # First try to find video URL directly from video element
-            video_url = self._find_video_url()
-            if video_url:
-                if on_status:
-                    on_status(f"Found video URL directly")
-                return video_url
-            
-            # Try to find and click download button using JavaScript
-            # Based on HTML: <button aria-label="Tải xuống"> with svg.lucide-download
-            js_click_download = """
-            // Method 1: Find by aria-label (exact match)
-            var btn = document.querySelector('button[aria-label="Tải xuống"]');
-            if (btn && btn.offsetParent !== null) {
-                btn.click();
-                return 'clicked_aria';
-            }
-            
-            // Method 2: Find by svg class lucide-download
-            var svg = document.querySelector('svg.lucide-download');
-            if (svg) {
-                var btn = svg.closest('button');
-                if (btn && btn.offsetParent !== null) {
-                    btn.click();
-                    return 'clicked_svg';
-                }
-            }
-            
-            // Method 3: Find button containing download icon
-            var buttons = document.querySelectorAll('button');
-            for (var b of buttons) {
-                var hasSvg = b.querySelector('svg.lucide-download') || 
-                             b.querySelector('svg[class*="download"]');
-                if (hasSvg && b.offsetParent !== null) {
-                    b.click();
-                    return 'clicked_btn';
-                }
-            }
-            
-            return null;
-            """
-            
-            clicked = self.browser.execute_script(js_click_download)
-            
-            if clicked:
-                if on_status:
-                    on_status(f"Clicked download button ({clicked}), waiting...")
-                time.sleep(2)
-                
-                # After clicking, browser may trigger download or show video
-                # Try to find video URL
-                video_url = self._find_video_url()
-                if video_url:
-                    return video_url
-                
-                # Wait a bit more and try again
-                time.sleep(3)
-                video_url = self._find_video_url()
-                if video_url:
-                    return video_url
-            
-            # Try Selenium click as fallback
-            download_selectors = [
-                'button[aria-label="Tải xuống"]',
-                'button[aria-label="Download"]',
-            ]
-            
-            for sel in download_selectors:
-                try:
-                    btn = self.browser.find_element(sel)
-                    if btn and btn.is_displayed():
-                        if on_status:
-                            on_status("Clicking download via Selenium...")
-                        self.browser.execute_script("arguments[0].click();", btn)
-                        time.sleep(3)
+                    for (var item of items) {
+                        // Check for Video text
+                        var text = item.textContent || '';
+                        if (text.includes('Video') && text.includes('Tạo một video')) {
+                            var rect = item.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                return {
+                                    found: true,
+                                    x: rect.x + rect.width / 2,
+                                    y: rect.y + rect.height / 2,
+                                    text: text.substring(0, 30)
+                                };
+                            }
+                        }
                         
-                        video_url = self._find_video_url()
-                        if video_url:
-                            return video_url
-                except:
-                    continue
+                        // Check for play icon (polygon SVG)
+                        var svg = item.querySelector('svg');
+                        if (svg && svg.querySelector('polygon')) {
+                            var rect = item.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                return {
+                                    found: true,
+                                    x: rect.x + rect.width / 2,
+                                    y: rect.y + rect.height / 2,
+                                    text: 'Video (polygon icon)'
+                                };
+                            }
+                        }
+                    }
+                    
+                    return {found: false, reason: 'NO_VIDEO_OPTION', itemCount: items.length};
+                })()
+            """)
+            print(f"   Video option: {video_option}")
             
-            # Final attempt - search page source
-            video_url = self._find_video_url()
-            return video_url
+            if video_option and video_option.get('found'):
+                # Use JS click on Video option
+                click_result = await solver.driver.main_tab.evaluate("""
+                    (function() {
+                        var items = document.querySelectorAll('[role="menuitem"]');
+                        for (var item of items) {
+                            var text = item.textContent || '';
+                            if (text.includes('Video') && text.includes('Tạo một video')) {
+                                item.click();
+                                return 'clicked Video menuitem';
+                            }
+                            // Also check for polygon SVG (play icon)
+                            var svg = item.querySelector('svg');
+                            if (svg && svg.querySelector('polygon')) {
+                                item.click();
+                                return 'clicked Video by polygon icon';
+                            }
+                        }
+                        return 'no video option found';
+                    })()
+                """)
+                print(f"   Click result: {click_result}")
+            else:
+                # Fallback: keyboard navigation
+                print("   Video not found, trying keyboard navigation...")
+                await solver.driver.main_tab.send(cdp.input_.dispatch_key_event(
+                    type_="keyDown", key="ArrowDown", code="ArrowDown", windows_virtual_key_code=40
+                ))
+                await solver.driver.main_tab.send(cdp.input_.dispatch_key_event(
+                    type_="keyUp", key="ArrowDown", code="ArrowDown", windows_virtual_key_code=40
+                ))
+                await asyncio.sleep(0.3)
+                await solver.driver.main_tab.send(cdp.input_.dispatch_key_event(
+                    type_="keyDown", key="Enter", code="Enter", windows_virtual_key_code=13
+                ))
+                await solver.driver.main_tab.send(cdp.input_.dispatch_key_event(
+                    type_="keyUp", key="Enter", code="Enter", windows_virtual_key_code=13
+                ))
+                print("   Sent ArrowDown + Enter")
             
+            await asyncio.sleep(1)
+            
+            # Verify final mode
+            verify = await solver.driver.main_tab.evaluate("""
+                (function() {
+                    var trigger = document.querySelector('#model-select-trigger') ||
+                                  document.querySelector('button[aria-haspopup="menu"]');
+                    if (!trigger) return 'NO_TRIGGER';
+                    
+                    var svg = trigger.querySelector('svg');
+                    if (svg) {
+                        if (svg.querySelector('polygon')) return 'VIDEO_MODE_OK';
+                        if (svg.querySelector('rect')) return 'IMAGE_MODE';
+                    }
+                    
+                    var text = trigger.textContent || '';
+                    if (text.includes('Video')) return 'VIDEO_MODE_OK';
+                    if (text.includes('Image') || text.includes('Ảnh')) return 'IMAGE_MODE';
+                    
+                    return 'UNKNOWN';
+                })()
+            """)
+            print(f"   ✅ Final mode: {verify}")
+            
+            if on_status:
+                on_status(f"   Mode: {verify}")
+                
+        except Exception as e:
+            print(f"⚠️ Mode select error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def _enter_prompt(
+        self, solver: CloudflareSolver, prompt: str, on_status: Optional[Callable]
+    ) -> bool:
+        """Enter prompt in editor"""
+        try:
+            escaped_prompt = prompt.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
+            
+            js = f"""
+            (function() {{
+                var editor = document.querySelector('div.tiptap.ProseMirror') ||
+                             document.querySelector('div[contenteditable="true"]') ||
+                             document.querySelector('.ProseMirror') ||
+                             document.querySelector('textarea');
+                
+                if (!editor) return 'no_editor';
+                
+                editor.focus();
+                
+                if (editor.tagName === 'TEXTAREA') {{
+                    editor.value = '{escaped_prompt}';
+                    editor.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    return 'textarea_filled';
+                }}
+                
+                editor.innerHTML = '<p>{escaped_prompt}</p>';
+                editor.dispatchEvent(new Event('input', {{bubbles: true}}));
+                return 'editor_filled';
+            }})()
+            """
+            result = await solver.driver.main_tab.evaluate(js)
+            if on_status:
+                on_status(f"   Prompt result: {result}")
+            return 'filled' in result
         except Exception as e:
             if on_status:
-                on_status(f"Download error: {str(e)[:40]}")
-            return None
+                on_status(f"⚠️ Prompt error: {e}")
+            return False
     
-    def _find_video_url(self) -> Optional[str]:
-        """Find video URL in page using multiple methods"""
-        if not self.browser:
-            return None
-        
+    async def _submit_prompt(self, solver: CloudflareSolver, on_status: Optional[Callable] = None) -> None:
+        """Click submit button"""
         try:
-            # Method 1: Use JavaScript to find video src (most reliable)
-            js_find_video = """
-            // Check video elements
-            var videos = document.querySelectorAll('video');
-            for (var v of videos) {
-                if (v.src && v.src.includes('.mp4') && v.src.startsWith('http')) {
-                    return v.src;
-                }
-                if (v.currentSrc && v.currentSrc.includes('.mp4') && v.currentSrc.startsWith('http')) {
-                    return v.currentSrc;
-                }
-                var sources = v.querySelectorAll('source');
-                for (var s of sources) {
-                    if (s.src && s.src.includes('.mp4') && s.src.startsWith('http')) {
-                        return s.src;
+            js = """
+            (function() {
+                var btn = document.querySelector('button[type="submit"]');
+                if (!btn) {
+                    var btns = document.querySelectorAll('button');
+                    for (var b of btns) {
+                        var label = b.getAttribute('aria-label') || b.textContent || '';
+                        if (label.includes('Send') || label.includes('Gửi') || label.includes('Submit')) {
+                            btn = b;
+                            break;
+                        }
                     }
                 }
-            }
-            
-            // Check for blob URLs and convert
-            for (var v of videos) {
-                if (v.src && v.src.startsWith('blob:')) {
-                    // Can't directly get blob URL content, but video exists
-                    return 'blob:' + v.src;
+                if (btn && !btn.disabled) {
+                    btn.click();
+                    return 'clicked';
                 }
-            }
-            
-            return null;
+                return 'no_button_or_disabled';
+            })()
             """
-            
-            js_result = self.browser.execute_script(js_find_video)
-            if js_result and js_result.startswith('http'):
-                return js_result
-            
-            # Method 2: Check video elements via Selenium
-            videos = self.browser.find_elements('video')
-            for v in videos:
-                try:
-                    src = v.get_attribute('src')
-                    if src and '.mp4' in src and src.startswith('http'):
-                        return src
-                    
-                    current_src = v.get_attribute('currentSrc')
-                    if current_src and '.mp4' in current_src and current_src.startswith('http'):
-                        return current_src
-                    
-                    sources = v.find_elements(By.TAG_NAME, 'source')
-                    for s in sources:
-                        src = s.get_attribute('src')
-                        if src and '.mp4' in src and src.startswith('http'):
-                            return src
-                except:
-                    continue
-            
-            # Method 3: Search page source for video URLs
-            html = self.browser.get_page_source()
-            
-            patterns = [
-                r'https://imagine-public\.x\.ai/[^"\'<>\s\)]+\.mp4[^"\'<>\s\)]*',
-                r'https://[^"\'<>\s]+\.mp4(?:\?[^"\'<>\s]*)?',
-                r'"src"\s*:\s*"(https://[^"]+\.mp4[^"]*)"',
-                r'"url"\s*:\s*"(https://[^"]+\.mp4[^"]*)"',
-            ]
-            
-            for pattern in patterns:
-                matches = re.findall(pattern, html)
-                for url in matches:
-                    if 'thumbnail' in url.lower() or 'preview' in url.lower():
-                        continue
-                    url = url.replace('\\u0026', '&').replace('\\/', '/').strip('"')
-                    if url.startswith('http') and '.mp4' in url:
-                        return url
-            
+            result = await solver.driver.main_tab.evaluate(js)
+            if on_status:
+                on_status(f"   Submit result: {result}")
         except Exception as e:
-            print(f"Find video URL error: {e}")
+            if on_status:
+                on_status(f"⚠️ Submit error: {e}")
+    
+    async def _wait_for_post_id(
+        self, solver: CloudflareSolver, on_status: Optional[Callable], timeout: int = 30
+    ) -> Optional[str]:
+        """Wait for post ID in URL"""
+        pattern = r'/imagine/post/([a-f0-9-]{36})'
         
+        for _ in range(timeout):
+            url = await solver.driver.main_tab.evaluate("window.location.href")
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+            await asyncio.sleep(1)
         return None
     
-    def _check_loading_state(self) -> Optional[str]:
-        """Check if video is still generating"""
-        if not self.browser:
-            return None
+    async def _wait_for_video_ready(
+        self, solver: CloudflareSolver, on_status: Optional[Callable], timeout: int = 600
+    ) -> bool:
+        """Wait for video to be ready"""
+        start = time.time()
         
-        try:
-            # Look for loading indicators
-            loading_selectors = [
-                '.animate-spin',
-                '[class*="loading"]',
-                '[class*="generating"]',
-                '.spinner',
-                'svg[class*="animate"]',
-                '[class*="pulse"]'
-            ]
-            
-            for sel in loading_selectors:
-                elements = self.browser.find_elements(sel)
-                if elements:
-                    return "generating"
-            
-            # Check for progress text in page
-            html = self.browser.get_page_source()
-            loading_texts = ['generating', 'creating', 'processing', 'loading', 'please wait']
-            for text in loading_texts:
-                if text in html.lower():
-                    return "in progress"
-            
-            # Check for video placeholder (means video is being generated)
-            placeholders = self.browser.find_elements('[class*="placeholder"]')
-            if placeholders:
-                return "generating"
-                
-        except:
-            pass
-        
-        return None
-    
-    def _verify_video_ready(self, url: str) -> bool:
-        """Verify video URL is actually ready to download"""
-        try:
-            # Do a HEAD request to check content-length
-            response = self.client.head(url, follow_redirects=True, timeout=10.0)
-            if response.status_code == 200:
-                content_length = response.headers.get('content-length', '0')
-                content_type = response.headers.get('content-type', '')
-                
-                # Video should be at least 500KB and be video type
-                size = int(content_length)
-                if size > 500000:
+        while time.time() - start < timeout:
+            try:
+                js = """
+                (function() {
+                    var c = document.querySelector('div.flex.flex-row.border');
+                    if (c && !c.classList.contains('pointer-events-none')) return true;
+                    return false;
+                })()
+                """
+                ready = await solver.driver.main_tab.evaluate(js)
+                if ready:
+                    if on_status:
+                        on_status("✅ Video ready!")
                     return True
-                elif size > 100000 and 'video' in content_type:
-                    return True
-        except Exception as e:
-            pass
+                
+                elapsed = int(time.time() - start)
+                if on_status and elapsed % 30 == 0:
+                    on_status(f"⏳ Generating... ({elapsed}s)")
+            except:
+                pass
+            await asyncio.sleep(3)
         return False
     
-    def _download_video(self, url: str, email: str, prompt: str, retry: int = 3) -> Optional[str]:
-        """Download video file using multiple methods"""
+    async def _click_share_button(self, solver: CloudflareSolver) -> bool:
+        """Click share button"""
+        try:
+            js = """
+            (function() {
+                var btn = document.querySelector('button[aria-label*="share" i]') ||
+                          document.querySelector('button[aria-label*="chia sẻ"]');
+                if (!btn) {
+                    var svg = document.querySelector('svg.lucide-share');
+                    if (svg) btn = svg.closest('button');
+                }
+                if (btn && !btn.disabled) {
+                    btn.click();
+                    return true;
+                }
+                return false;
+            })()
+            """
+            return await solver.driver.main_tab.evaluate(js) or False
+        except:
+            return False
+
+    async def _download_video(
+        self,
+        solver: CloudflareSolver,
+        url: str,
+        email: str,
+        prompt: str,
+        on_status: Optional[Callable]
+    ) -> Optional[str]:
+        """Download video using requests with browser cookies"""
+        if not url:
+            return None
+        
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -666,195 +604,974 @@ class VideoGenerator:
         filename = f"{ts}_{email_short}_{prompt_short}.mp4"
         path = OUTPUT_DIR / filename
         
-        # Clean URL
-        url = url.replace('\\u0026', '&').replace('\\/', '/')
-        
-        # Method 1: Try download using browser's fetch (has cookies/session)
-        if self.browser and self.browser.driver:
-            try:
-                result = self._download_via_browser(url, str(path.absolute()))
-                if result and path.exists():
-                    file_size = os.path.getsize(path)
-                    if file_size > 100000:
-                        print(f"Downloaded via browser fetch: {path} ({file_size} bytes)")
-                        return str(path)
-            except Exception as e:
-                print(f"Browser fetch failed: {e}")
+        try:
+            import requests
             
-            # Method 2: Use browser to create download link and click
-            try:
-                result = self._download_via_link_click(url, filename)
-                if result:
-                    # Check default download folder
-                    import glob
-                    download_paths = [
-                        Path.home() / "Downloads" / filename,
-                        Path.home() / "Downloads" / f"{filename.replace('.mp4', '')}*.mp4",
-                    ]
-                    
-                    time.sleep(3)  # Wait for download
-                    
-                    for dp in download_paths:
-                        if '*' in str(dp):
-                            matches = glob.glob(str(dp))
-                            if matches:
-                                # Move to output folder
-                                import shutil
-                                shutil.move(matches[0], str(path))
-                                if path.exists() and os.path.getsize(path) > 100000:
-                                    print(f"Downloaded via link click: {path}")
-                                    return str(path)
-                        elif dp.exists():
-                            import shutil
-                            shutil.move(str(dp), str(path))
-                            if path.exists() and os.path.getsize(path) > 100000:
-                                print(f"Downloaded via link click: {path}")
-                                return str(path)
-            except Exception as e:
-                print(f"Link click download failed: {e}")
-        
-        # Method 3: Fallback to httpx with browser cookies
-        cookies_dict = {}
-        if self.browser and self.browser.driver:
-            try:
-                cookies_dict = self.browser.get_cookies()
-            except:
-                pass
-        
-        for attempt in range(retry):
-            try:
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                    'Accept': 'video/mp4,video/*;q=0.9,*/*;q=0.8',
-                    'Referer': 'https://grok.com/',
-                    'Origin': 'https://grok.com',
-                }
+            # Get cookies from browser - already dict format
+            cookies_list = await solver.get_cookies()
+            cookies_dict = {}
+            for c in cookies_list:
+                # cookies_list is list of dicts
+                if isinstance(c, dict):
+                    cookies_dict[c['name']] = c['value']
+                else:
+                    cookies_dict[c.name] = c.value
+            
+            if on_status:
+                on_status(f"📥 Downloading video...")
+            
+            headers = {
+                'User-Agent': await solver.get_user_agent(),
+                'Referer': 'https://grok.com/',
+            }
+            
+            response = requests.get(url, cookies=cookies_dict, headers=headers, timeout=120, stream=True)
+            
+            if response.status_code == 200:
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
                 
-                with self.client.stream("GET", url, follow_redirects=True, timeout=180.0, headers=headers, cookies=cookies_dict) as r:
-                    if r.status_code != 200:
-                        print(f"Download attempt {attempt + 1}: HTTP {r.status_code}")
-                        time.sleep(2)
-                        continue
-                    
-                    with open(path, "wb") as f:
-                        for chunk in r.iter_bytes(chunk_size=8192):
+                with open(path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0 and on_status and downloaded % (1024 * 1024) < 8192:
+                                pct = int(downloaded * 100 / total_size)
+                                on_status(f"📥 Downloading... {pct}%")
+                
+                if path.exists() and os.path.getsize(path) > 10000:
+                    if on_status:
+                        size_mb = os.path.getsize(path) / (1024 * 1024)
+                        on_status(f"✅ Downloaded: {filename} ({size_mb:.1f} MB)")
+                    return str(path)
+                else:
+                    if on_status:
+                        on_status(f"⚠️ File too small or empty")
+                    return None
+            else:
+                if on_status:
+                    on_status(f"⚠️ Download failed: HTTP {response.status_code}")
+                return None
+            
+        except Exception as e:
+            if on_status:
+                on_status(f"⚠️ Download error: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def close(self):
+        """Close browser (handled by context manager)"""
+        pass
+    
+    def download_video_from_url(
+        self, url: str, email: str, prompt: str, on_status: Optional[Callable] = None
+    ) -> Optional[str]:
+        """Download video from URL (for History tab)"""
+        return asyncio.run(self._download_from_url_async(url, email, prompt, on_status))
+    
+    async def _download_from_url_async(
+        self, url: str, email: str, prompt: str, on_status: Optional[Callable]
+    ) -> Optional[str]:
+        """Async download from URL using requests"""
+        if not url:
+            return None
+        
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        email_short = email.split("@")[0][:10]
+        prompt_short = re.sub(r'[^\w\s]', '', prompt)[:20].replace(' ', '_')
+        filename = f"{ts}_{email_short}_{prompt_short}.mp4"
+        path = OUTPUT_DIR / filename
+        
+        if on_status:
+            on_status("📥 Downloading video...")
+        
+        try:
+            import requests
+            
+            headers = {
+                'User-Agent': get_chrome_user_agent(),
+                'Referer': 'https://grok.com/',
+            }
+            
+            response = requests.get(url, headers=headers, timeout=120, stream=True)
+            
+            if response.status_code == 200:
+                with open(path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
                             f.write(chunk)
                 
-                if path.exists():
-                    file_size = os.path.getsize(path)
-                    if file_size > 100000:
-                        return str(path)
-                        
-            except Exception as e:
-                print(f"Download attempt {attempt + 1} error: {e}")
-                time.sleep(3)
-        
-        return None
-    
-    def _download_via_link_click(self, url: str, filename: str) -> bool:
-        """Create a download link and click it"""
-        if not self.browser or not self.browser.driver:
-            return False
-        
-        try:
-            js_code = """
-            var a = document.createElement('a');
-            a.href = arguments[0];
-            a.download = arguments[1];
-            a.style.display = 'none';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            return true;
-            """
+                if path.exists() and os.path.getsize(path) > 10000:
+                    if on_status:
+                        size_mb = os.path.getsize(path) / (1024 * 1024)
+                        on_status(f"✅ Downloaded: {filename} ({size_mb:.1f} MB)")
+                    return str(path)
             
-            result = self.browser.execute_script(js_code, url, filename)
-            return result == True
+            if on_status:
+                on_status(f"❌ Failed: HTTP {response.status_code}")
+            return None
+                
         except Exception as e:
-            print(f"Link click error: {e}")
-            return False
+            if on_status:
+                on_status(f"❌ Error: {e}")
+            return None
+
+
+
+class MultiTabVideoGenerator:
+    """
+    Multi-tab video generator - 1 browser per account, 3 tabs concurrent.
+    Example: 2 accounts = 2 browsers × 3 tabs = 6 concurrent video generations.
+    """
     
-    def _download_via_browser(self, url: str, save_path: str) -> bool:
-        """Download video using browser's JavaScript fetch"""
-        if not self.browser or not self.browser.driver:
+    def __init__(
+        self,
+        account: Account,
+        num_tabs: int = 3,
+        headless: bool = True,
+        on_status: Optional[Callable] = None
+    ):
+        self.account = account
+        self.num_tabs = num_tabs
+        self.headless = headless
+        self.on_status = on_status
+        
+        self.browser: Optional[zendriver.Browser] = None
+        self.config: Optional[zendriver.Config] = None  # Store config for user_data_dir
+        self.tabs: List[Any] = []  # List of tab objects
+        self.tab_ready: List[bool] = []  # Track which tabs are ready
+        self._running = True
+        self._user_data_dir: Optional[str] = None  # Browser profile directory
+    
+    def _log(self, msg: str, tab_id: int = -1):
+        """Log message with optional tab ID"""
+        prefix = f"[{self.account.email[:15]}]"
+        if tab_id >= 0:
+            prefix += f"[Tab{tab_id+1}]"
+        full_msg = f"{prefix} {msg}"
+        print(full_msg)
+        if self.on_status:
+            self.on_status(self.account.email, full_msg)
+    
+    async def start(self) -> bool:
+        """Start browser and create tabs"""
+        if not ZENDRIVER_AVAILABLE:
+            self._log("❌ zendriver not installed")
             return False
         
         try:
-            # Use JavaScript to fetch and get blob data
-            # This works because browser has the session cookies
-            js_code = """
-            async function downloadVideo(url) {
-                try {
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        credentials: 'include',
-                        mode: 'cors'
-                    });
+            self._log("🚀 Starting browser...")
+            
+            # Create browser config
+            user_agent = get_chrome_user_agent()
+            self.config = zendriver.Config(headless=self.headless)
+            self.config.add_argument(f"--user-agent={user_agent}")
+            self.config.add_argument("--mute-audio")  # Mute all audio
+            
+            # Start browser
+            self.browser = zendriver.Browser(self.config)
+            await self.browser.start()
+            
+            # Save user_data_dir for later use in downloads
+            self._user_data_dir = self.config.user_data_dir
+            self._log(f"   Browser profile: {self._user_data_dir}")
+            
+            # Step 1: Inject cookies to main_tab first
+            self._log("🍪 Injecting cookies...")
+            await self.browser.main_tab.get("https://grok.com/favicon.ico")
+            await asyncio.sleep(1)
+            
+            if self.account.cookies:
+                for name, value in self.account.cookies.items():
+                    if name != 'cf_clearance':
+                        try:
+                            await self.browser.main_tab.send(
+                                cdp.network.set_cookie(
+                                    name=name,
+                                    value=value,
+                                    domain=".grok.com",
+                                    path="/",
+                                    secure=True,
+                                    http_only=name in ['sso', 'sso-rw'],
+                                )
+                            )
+                        except:
+                            pass
+            
+            # Step 2: Navigate main_tab to /imagine and handle Cloudflare
+            self._log("🌐 Going to Grok Imagine...")
+            await self.browser.main_tab.get(IMAGINE_URL)
+            await asyncio.sleep(3)
+            
+            # Check and solve Cloudflare on main_tab
+            cf_passed = await self._handle_cloudflare_on_tab(self.browser.main_tab)
+            if not cf_passed:
+                self._log("❌ Cloudflare challenge failed")
+                return False
+            
+            # Check login status
+            current_url = await self.browser.main_tab.evaluate("window.location.href")
+            if 'sign-in' in current_url or 'accounts.x.ai' in current_url:
+                self._log("❌ Session expired. Please login again.")
+                return False
+            
+            await asyncio.sleep(2)
+            
+            # Step 3: Create additional tabs (main_tab is tab 0)
+            self.tabs = [self.browser.main_tab]
+            self.tab_ready = [True]
+            
+            for i in range(1, self.num_tabs):
+                self._log(f"📑 Creating Tab {i+1}...")
+                new_tab = await self.browser.get(IMAGINE_URL, new_tab=True)
+                await asyncio.sleep(2)
+                self.tabs.append(new_tab)
+                self.tab_ready.append(True)
+            
+            self._log(f"✅ Browser ready with {len(self.tabs)} tabs")
+            return True
+            
+        except Exception as e:
+            self._log(f"❌ Start error: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    async def stop(self):
+        """Stop browser"""
+        self._running = False
+        if self.browser:
+            try:
+                await self.browser.stop()
+            except:
+                pass
+            self.browser = None
+        self.tabs = []
+        self.tab_ready = []
+    
+    async def _handle_cloudflare_on_tab(self, tab) -> bool:
+        """Handle Cloudflare challenge on a specific tab - same logic as VideoGenerator"""
+        try:
+            html = await tab.get_content()
+            cf_indicators = ['Just a moment', 'Checking your browser', 'challenge-platform', 'cf-turnstile']
+            
+            if not any(ind in html for ind in cf_indicators):
+                self._log("✅ No Cloudflare challenge")
+                return True
+            
+            self._log("🔐 Cloudflare detected, solving...")
+            
+            # Set user agent metadata (important for headless)
+            user_agent = get_chrome_user_agent()
+            try:
+                from zendriver.cdp.emulation import UserAgentBrandVersion, UserAgentMetadata
+                import user_agents
+                
+                device = user_agents.parse(user_agent)
+                metadata = UserAgentMetadata(
+                    architecture="x86",
+                    bitness="64",
+                    brands=[
+                        UserAgentBrandVersion(brand="Not)A;Brand", version="8"),
+                        UserAgentBrandVersion(brand="Chromium", version=str(device.browser.version[0])),
+                        UserAgentBrandVersion(brand="Google Chrome", version=str(device.browser.version[0])),
+                    ],
+                    full_version_list=[
+                        UserAgentBrandVersion(brand="Not)A;Brand", version="8"),
+                        UserAgentBrandVersion(brand="Chromium", version=str(device.browser.version[0])),
+                        UserAgentBrandVersion(brand="Google Chrome", version=str(device.browser.version[0])),
+                    ],
+                    mobile=device.is_mobile,
+                    model=device.device.model or "",
+                    platform=device.os.family,
+                    platform_version=device.os.version_string,
+                    full_version=device.browser.version_string,
+                    wow64=False,
+                )
+                tab.feed_cdp(
+                    cdp.network.set_user_agent_override(user_agent, user_agent_metadata=metadata)
+                )
+                self._log("   Set user agent metadata")
+            except Exception as e:
+                self._log(f"   ⚠️ UA metadata error: {e}")
+            
+            # Detect challenge type
+            challenge_type = None
+            for platform_value in ['non-interactive', 'managed', 'interactive']:
+                if f"cType: '{platform_value}'" in html:
+                    challenge_type = platform_value
+                    break
+            
+            if challenge_type:
+                self._log(f"   Challenge type: {challenge_type}")
+            
+            # Try to solve interactive challenge (click turnstile)
+            try:
+                from zendriver.core.element import Element
+                
+                widget_input = await tab.find("input")
+                
+                if widget_input and widget_input.parent and widget_input.parent.shadow_roots:
+                    challenge = Element(
+                        widget_input.parent.shadow_roots[0],
+                        tab,
+                        widget_input.parent.tree,
+                    )
+                    challenge = challenge.children[0]
                     
-                    if (!response.ok) {
-                        // Try without credentials
-                        const response2 = await fetch(url, {
-                            method: 'GET',
-                            mode: 'no-cors'
-                        });
-                        if (!response2.ok) {
-                            return {error: 'HTTP ' + response.status};
+                    if (
+                        isinstance(challenge, Element)
+                        and "display: none;" not in challenge.attrs.get("style", "")
+                    ):
+                        self._log("   Clicking turnstile...")
+                        await asyncio.sleep(1)
+                        try:
+                            await challenge.get_position()
+                            await challenge.mouse_click()
+                        except Exception as e:
+                            self._log(f"   ⚠️ Click error: {e}")
+            except Exception as e:
+                self._log(f"   ⚠️ Turnstile error: {e}")
+            
+            # Wait for cf_clearance cookie
+            for i in range(60):
+                cookies = await self.browser.cookies.get_all()
+                for c in cookies:
+                    if c.name == "cf_clearance":
+                        self._log("✅ Cloudflare passed!")
+                        return True
+                await asyncio.sleep(1)
+                if i % 10 == 0:
+                    self._log(f"⏳ Waiting for cf_clearance... ({i}s)")
+            
+            self._log("❌ Cloudflare timeout")
+            return False
+            
+        except Exception as e:
+            self._log(f"⚠️ CF check error: {e}")
+            import traceback
+            traceback.print_exc()
+            return True  # Continue anyway
+    
+    async def generate_on_tab(
+        self,
+        tab_id: int,
+        prompt: str,
+        settings: VideoSettings,
+        retry_count: int = 0
+    ) -> VideoTask:
+        """Generate video on a specific tab with retry support"""
+        MAX_RETRIES = 1
+        
+        task = VideoTask(
+            account_email=self.account.email,
+            prompt=prompt,
+            settings=settings,
+            status="creating"
+        )
+        
+        if tab_id >= len(self.tabs):
+            task.status = "failed"
+            task.error_message = f"Invalid tab_id: {tab_id}"
+            return task
+        
+        tab = self.tabs[tab_id]
+        
+        try:
+            # Mark tab as busy
+            self.tab_ready[tab_id] = False
+            
+            # Step 1: Make sure we're on /imagine
+            current_url = await tab.evaluate("window.location.href")
+            if '/imagine' not in current_url or '/post/' in current_url:
+                self._log("🔄 Navigating to /imagine...", tab_id)
+                await tab.get(IMAGINE_URL)
+                await asyncio.sleep(2)
+            
+            # Step 2: Select Video mode
+            self._log("🎬 Selecting Video mode...", tab_id)
+            await self._select_video_mode_on_tab(tab, tab_id)
+            await asyncio.sleep(1.5)
+            
+            # Step 3: Enter prompt
+            self._log(f"✏️ Entering prompt: {prompt[:30]}...", tab_id)
+            if not await self._enter_prompt_on_tab(tab, prompt, tab_id):
+                task.status = "failed"
+                task.error_message = "Failed to enter prompt"
+                self.tab_ready[tab_id] = True
+                return task
+            
+            await asyncio.sleep(0.5)
+            
+            # Step 4: Submit
+            self._log("📤 Submitting...", tab_id)
+            await self._submit_prompt_on_tab(tab, tab_id)
+            await asyncio.sleep(2)
+            
+            # Step 5: Wait for post ID
+            self._log("⏳ Waiting for post ID...", tab_id)
+            post_id = await self._wait_for_post_id_on_tab(tab, timeout=30)
+            
+            if not post_id:
+                # RETRY LOGIC: If failed to get post ID, retry once
+                if retry_count < MAX_RETRIES:
+                    self._log(f"⚠️ No post ID, retrying ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
+                    # Navigate back to /imagine and retry
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                    self.tab_ready[tab_id] = True
+                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1)
+                
+                task.status = "failed"
+                task.error_message = "Could not get post ID"
+                self.tab_ready[tab_id] = True
+                return task
+            
+            task.post_id = post_id
+            task.media_url = VIDEO_DOWNLOAD_URL.format(post_id=post_id)
+            
+            self._log(f"✅ Post ID: {post_id}", tab_id)
+            
+            # Step 6: STAY on post page and wait for video to render
+            self._log("⏳ Waiting for video to render...", tab_id)
+            video_ready = await self._wait_for_video_ready_on_tab(tab, tab_id, timeout=300)
+            
+            if video_ready:
+                # Step 7: Click share button to create share link (makes video downloadable)
+                self._log("🔗 Creating share link...", tab_id)
+                await self._click_share_button_on_tab(tab, tab_id)
+                await asyncio.sleep(3)
+                
+                # Step 8: Download video immediately
+                self._log("📥 Downloading video...", tab_id)
+                output_path = await self._download_video_on_tab(tab, task, tab_id)
+                if output_path:
+                    task.output_path = output_path
+                    self._log(f"✅ Downloaded: {os.path.basename(output_path)}", tab_id)
+            else:
+                self._log("⚠️ Video render timeout, saving for later download", tab_id)
+            
+            task.status = "completed"
+            task.completed_at = datetime.now()
+            
+            # Save user_data_dir and cookies for download later (if needed)
+            task.user_data_dir = self._user_data_dir
+            task.account_cookies = self.account.cookies
+            
+            # Step 9: Navigate back to /imagine for next video
+            self._log("🔄 Ready for next video...", tab_id)
+            await tab.get(IMAGINE_URL)
+            await asyncio.sleep(1.5)
+            
+            # Mark tab as ready
+            self.tab_ready[tab_id] = True
+            
+            return task
+            
+        except Exception as e:
+            task.status = "failed"
+            task.error_message = str(e)
+            self._log(f"❌ Error: {e}", tab_id)
+            import traceback
+            traceback.print_exc()
+            self.tab_ready[tab_id] = True
+            return task
+    
+    async def _wait_for_video_ready_on_tab(self, tab, tab_id: int, timeout: int = 300) -> bool:
+        """Wait for video to be ready on post page (no opacity-50/pointer-events-none)"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            if not self._running:
+                return False
+            
+            status = await tab.evaluate("""
+                (function() {
+                    // Find the download button
+                    var downloadBtn = document.querySelector('button[aria-label="Tải xuống"]');
+                    if (!downloadBtn) {
+                        var icons = document.querySelectorAll('svg.lucide-download');
+                        for (var icon of icons) {
+                            var btn = icon.closest('button');
+                            if (btn) {
+                                downloadBtn = btn;
+                                break;
+                            }
                         }
                     }
                     
-                    const blob = await response.blob();
-                    
-                    // Check if blob has content
-                    if (blob.size < 10000) {
-                        return {error: 'Blob too small: ' + blob.size};
+                    if (!downloadBtn) {
+                        return {ready: false, type: 'no_download_btn'};
                     }
                     
-                    const reader = new FileReader();
+                    // Find parent container with border class
+                    var container = downloadBtn.closest('div.flex.flex-row.border');
+                    if (!container) {
+                        container = downloadBtn.parentElement;
+                        while (container && !container.classList.contains('border')) {
+                            container = container.parentElement;
+                        }
+                    }
                     
-                    return new Promise((resolve, reject) => {
-                        reader.onloadend = function() {
-                            try {
-                                const base64 = reader.result.split(',')[1];
-                                resolve({data: base64, size: blob.size, type: blob.type});
-                            } catch(e) {
-                                reject({error: e.toString()});
-                            }
-                        };
-                        reader.onerror = function() {
-                            reject({error: 'FileReader error'});
-                        };
-                        reader.readAsDataURL(blob);
-                    });
-                } catch (e) {
-                    return {error: e.toString()};
-                }
-            }
-            return await downloadVideo(arguments[0]);
-            """
-            
-            result = self.browser.driver.execute_script(js_code, url)
-            
-            if result and isinstance(result, dict):
-                if 'data' in result and result['data']:
-                    import base64
-                    video_data = base64.b64decode(result['data'])
+                    if (!container) {
+                        return {ready: false, type: 'no_container'};
+                    }
                     
-                    if len(video_data) > 100000:  # At least 100KB
-                        with open(save_path, 'wb') as f:
-                            f.write(video_data)
-                        return True
-                    else:
-                        print(f"Downloaded data too small: {len(video_data)} bytes")
-                        
-                elif 'error' in result:
-                    print(f"JS download error: {result['error']}")
-                
-        except Exception as e:
-            print(f"Browser download error: {e}")
+                    // Check for generating state
+                    var classes = container.className || '';
+                    if (classes.includes('opacity-50') || classes.includes('pointer-events-none')) {
+                        return {ready: false, type: 'generating'};
+                    }
+                    
+                    return {ready: true, type: 'ready'};
+                })()
+            """)
+            
+            if status and status.get('ready'):
+                self._log("✅ Video ready!", tab_id)
+                return True
+            
+            elapsed = int(time.time() - start_time)
+            if elapsed % 30 == 0 and elapsed > 0:
+                self._log(f"⏳ Rendering... ({elapsed}s)", tab_id)
+            
+            await asyncio.sleep(3)
         
         return False
     
-    def close(self):
-        self.client.close()
-        if self.browser:
-            self.browser.close_browser()
+    async def _click_share_button_on_tab(self, tab, tab_id: int) -> bool:
+        """Click share button to create share link"""
+        try:
+            result = await tab.evaluate("""
+                (function() {
+                    var shareBtn = document.querySelector('button[aria-label="Tạo link chia sẻ"]');
+                    
+                    if (!shareBtn) {
+                        var icons = document.querySelectorAll('svg.lucide-share');
+                        for (var icon of icons) {
+                            var btn = icon.closest('button');
+                            if (btn) {
+                                shareBtn = btn;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (shareBtn && !shareBtn.disabled) {
+                        shareBtn.click();
+                        return {clicked: true};
+                    }
+                    return {clicked: false};
+                })()
+            """)
+            return result and result.get('clicked', False)
+        except Exception as e:
+            self._log(f"⚠️ Share click error: {e}", tab_id)
+            return False
+    
+    async def _download_video_on_tab(self, tab, task: VideoTask, tab_id: int) -> Optional[str]:
+        """
+        Download video using CDP set_download_behavior.
+        
+        The video is hosted on imagine-public.x.ai which requires __cf_bm cookie.
+        We use CDP to set download behavior and navigate to video URL.
+        """
+        try:
+            import glob
+            
+            # Build video URL
+            video_url = task.media_url
+            download_url = f"{video_url}&dl=1" if '?' in video_url else f"{video_url}?dl=1"
+            
+            self._log(f"   Downloading video...", tab_id)
+            
+            # Step 1: Navigate to video URL first to get __cf_bm cookie
+            download_tab = await self.browser.get(video_url, new_tab=True)
+            await asyncio.sleep(3)
+            
+            # Step 2: Set download behavior using CDP
+            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                await download_tab.send(cdp.browser.set_download_behavior(
+                    behavior="allow",
+                    download_path=str(OUTPUT_DIR.absolute())
+                ))
+            except Exception as e:
+                self._log(f"   CDP set_download_behavior error: {e}", tab_id)
+            
+            # Step 3: Navigate to download URL
+            self._log(f"   Triggering download...", tab_id)
+            await download_tab.get(download_url)
+            
+            # Step 4: Wait for download to complete
+            for i in range(30):  # Max 2.5 minutes
+                await asyncio.sleep(5)
+                
+                # Check for downloaded file
+                mp4_files = glob.glob(str(OUTPUT_DIR / "*.mp4"))
+                if mp4_files:
+                    newest = max(mp4_files, key=os.path.getctime)
+                    size = os.path.getsize(newest)
+                    
+                    # Check if download is complete (file size stable and > 10KB)
+                    if size > 10000:
+                        await asyncio.sleep(2)
+                        new_size = os.path.getsize(newest)
+                        if new_size == size:  # Size stable = download complete
+                            # Close download tab
+                            try:
+                                await download_tab.close()
+                            except:
+                                pass
+                            return newest
+                
+                if i % 3 == 0:
+                    self._log(f"   Waiting for download... ({i * 5}s)", tab_id)
+            
+            # Close download tab
+            try:
+                await download_tab.close()
+            except:
+                pass
+            
+            self._log(f"⚠️ Download timeout", tab_id)
+            return None
+                
+        except Exception as e:
+            self._log(f"⚠️ Download error: {e}", tab_id)
+            import traceback
+            traceback.print_exc()
+            return None
+            return None
+    async def _select_video_mode_on_tab(self, tab, tab_id: int) -> None:
+        """Select Video mode on a specific tab"""
+        try:
+            # Wait for trigger button
+            trigger_info = None
+            for wait_attempt in range(10):
+                await asyncio.sleep(0.5)
+                trigger_info = await tab.evaluate("""
+                    (function() {
+                        var trigger = document.querySelector('#model-select-trigger');
+                        if (trigger) {
+                            var rect = trigger.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                return {
+                                    x: rect.x + rect.width / 2,
+                                    y: rect.y + rect.height / 2,
+                                    found: true
+                                };
+                            }
+                        }
+                        return {found: false};
+                    })()
+                """)
+                if trigger_info and trigger_info.get('found'):
+                    break
+            
+            if not trigger_info or not trigger_info.get('found'):
+                self._log("⚠️ Trigger not found", tab_id)
+                return
+            
+            # Click trigger with JS
+            await tab.evaluate("""
+                (function() {
+                    var trigger = document.querySelector('#model-select-trigger');
+                    if (trigger) trigger.click();
+                })()
+            """)
+            await asyncio.sleep(1)
+            
+            # Check menu state
+            menu_state = await tab.evaluate("""
+                (function() {
+                    var menu = document.querySelector('[data-radix-menu-content][data-state="open"]') ||
+                               document.querySelector('[role="menu"][data-state="open"]');
+                    return menu ? {open: true} : {open: false};
+                })()
+            """)
+            
+            # If menu not open, try CDP click
+            if not menu_state.get('open'):
+                x, y = trigger_info['x'], trigger_info['y']
+                await tab.send(cdp.input_.dispatch_mouse_event(
+                    type_="mousePressed", x=x, y=y,
+                    button=cdp.input_.MouseButton.LEFT, click_count=1
+                ))
+                await asyncio.sleep(0.1)
+                await tab.send(cdp.input_.dispatch_mouse_event(
+                    type_="mouseReleased", x=x, y=y,
+                    button=cdp.input_.MouseButton.LEFT, click_count=1
+                ))
+                await asyncio.sleep(1)
+            
+            # Click Video option
+            await tab.evaluate("""
+                (function() {
+                    var items = document.querySelectorAll('[role="menuitem"]');
+                    for (var item of items) {
+                        var text = item.textContent || '';
+                        if (text.includes('Video') && text.includes('Tạo một video')) {
+                            item.click();
+                            return 'clicked';
+                        }
+                        var svg = item.querySelector('svg');
+                        if (svg && svg.querySelector('polygon')) {
+                            item.click();
+                            return 'clicked polygon';
+                        }
+                    }
+                    return 'not found';
+                })()
+            """)
+            await asyncio.sleep(0.5)
+            
+        except Exception as e:
+            self._log(f"⚠️ Mode select error: {e}", tab_id)
+    
+    async def _enter_prompt_on_tab(self, tab, prompt: str, tab_id: int) -> bool:
+        """Enter prompt on a specific tab"""
+        try:
+            escaped_prompt = prompt.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
+            
+            js = f"""
+            (function() {{
+                var editor = document.querySelector('div.tiptap.ProseMirror') ||
+                             document.querySelector('div[contenteditable="true"]') ||
+                             document.querySelector('.ProseMirror') ||
+                             document.querySelector('textarea');
+                
+                if (!editor) return 'no_editor';
+                
+                editor.focus();
+                
+                if (editor.tagName === 'TEXTAREA') {{
+                    editor.value = '{escaped_prompt}';
+                    editor.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    return 'textarea_filled';
+                }}
+                
+                editor.innerHTML = '<p>{escaped_prompt}</p>';
+                editor.dispatchEvent(new Event('input', {{bubbles: true}}));
+                return 'editor_filled';
+            }})()
+            """
+            result = await tab.evaluate(js)
+            return 'filled' in result
+        except Exception as e:
+            self._log(f"⚠️ Prompt error: {e}", tab_id)
+            return False
+    
+    async def _submit_prompt_on_tab(self, tab, tab_id: int) -> None:
+        """Submit prompt on a specific tab"""
+        try:
+            js = """
+            (function() {
+                var btn = document.querySelector('button[type="submit"]');
+                if (!btn) {
+                    var btns = document.querySelectorAll('button');
+                    for (var b of btns) {
+                        var label = b.getAttribute('aria-label') || b.textContent || '';
+                        if (label.includes('Send') || label.includes('Gửi') || label.includes('Submit')) {
+                            btn = b;
+                            break;
+                        }
+                    }
+                }
+                if (btn && !btn.disabled) {
+                    btn.click();
+                    return 'clicked';
+                }
+                return 'no_button';
+            })()
+            """
+            await tab.evaluate(js)
+        except Exception as e:
+            self._log(f"⚠️ Submit error: {e}", tab_id)
+    
+    async def _wait_for_post_id_on_tab(self, tab, timeout: int = 30) -> Optional[str]:
+        """Wait for post ID on a specific tab"""
+        pattern = r'/imagine/post/([a-f0-9-]{36})'
+        
+        for _ in range(timeout):
+            if not self._running:
+                return None
+            url = await tab.evaluate("window.location.href")
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+            await asyncio.sleep(1)
+        return None
+    
+    async def generate_batch(
+        self,
+        prompts: List[str],
+        settings: VideoSettings,
+        on_task_complete: Optional[Callable] = None,
+        max_retries: int = 1
+    ) -> List[VideoTask]:
+        """
+        Generate multiple videos concurrently using all tabs.
+        Returns list of completed tasks.
+        
+        Args:
+            prompts: List of prompts to generate
+            settings: Video settings
+            on_task_complete: Callback when each task completes
+            max_retries: Number of retries for failed tasks (default 1)
+        """
+        results: List[VideoTask] = []
+        prompt_queue = list(prompts)
+        retry_queue: List[Tuple[str, int]] = []  # (prompt, retry_count)
+        active_tasks: Dict[int, Tuple[asyncio.Task, str, int]] = {}  # tab_id -> (task, prompt, retry_count)
+        
+        self._log(f"📋 Starting batch: {len(prompts)} prompts, {len(self.tabs)} tabs")
+        
+        while prompt_queue or retry_queue or active_tasks:
+            if not self._running:
+                # Cancel all active tasks
+                for task_info in active_tasks.values():
+                    task_info[0].cancel()
+                break
+            
+            # Start new tasks on ready tabs
+            for tab_id in range(len(self.tabs)):
+                if tab_id not in active_tasks and self.tab_ready[tab_id]:
+                    prompt = None
+                    retry_count = 0
+                    
+                    # Prioritize retry queue
+                    if retry_queue:
+                        prompt, retry_count = retry_queue.pop(0)
+                        self._log(f"🔄 Retrying ({retry_count}/{max_retries}): {prompt[:30]}...", tab_id)
+                    elif prompt_queue:
+                        prompt = prompt_queue.pop(0)
+                        self._log(f"▶️ Starting: {prompt[:30]}...", tab_id)
+                    
+                    if prompt:
+                        # Create async task
+                        task = asyncio.create_task(
+                            self.generate_on_tab(tab_id, prompt, settings)
+                        )
+                        active_tasks[tab_id] = (task, prompt, retry_count)
+            
+            # Wait for any task to complete
+            if active_tasks:
+                tasks_only = [t[0] for t in active_tasks.values()]
+                done, _ = await asyncio.wait(
+                    tasks_only,
+                    timeout=1.0,
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                # Process completed tasks
+                for completed_task in done:
+                    # Find which tab_id this task belongs to
+                    completed_tab_id = None
+                    prompt_used = None
+                    retry_count = 0
+                    
+                    for tid, (t, p, r) in list(active_tasks.items()):
+                        if t == completed_task:
+                            completed_tab_id = tid
+                            prompt_used = p
+                            retry_count = r
+                            del active_tasks[tid]
+                            break
+                    
+                    try:
+                        video_task = completed_task.result()
+                        
+                        # Check if failed and should retry
+                        if video_task.status == "failed" and retry_count < max_retries and prompt_used:
+                            self._log(f"⚠️ Failed, will retry: {video_task.error_message}", completed_tab_id or -1)
+                            retry_queue.append((prompt_used, retry_count + 1))
+                            # Don't add to results yet, wait for retry
+                        else:
+                            results.append(video_task)
+                            
+                            if on_task_complete:
+                                on_task_complete(video_task)
+                            
+                            if video_task.status == "completed":
+                                self._log(f"✅ Done: {video_task.post_id}", completed_tab_id or -1)
+                            else:
+                                self._log(f"❌ Failed (no more retries): {video_task.error_message}", completed_tab_id or -1)
+                    except Exception as e:
+                        self._log(f"❌ Task error: {e}")
+                        # Add to retry queue if possible
+                        if retry_count < max_retries and prompt_used:
+                            retry_queue.append((prompt_used, retry_count + 1))
+            else:
+                await asyncio.sleep(0.5)
+        
+        success_count = len([r for r in results if r.status == 'completed'])
+        self._log(f"🎉 Batch complete: {success_count}/{len(results)} OK")
+        return results
+
+
+def run_multi_tab_generation(
+    account: Account,
+    prompts: List[str],
+    settings: VideoSettings,
+    num_tabs: int = 3,
+    headless: bool = True,
+    on_status: Optional[Callable] = None,
+    on_task_complete: Optional[Callable] = None
+) -> List[VideoTask]:
+    """
+    Synchronous wrapper for multi-tab video generation.
+    
+    Args:
+        account: Account to use
+        prompts: List of prompts to generate
+        settings: Video settings
+        num_tabs: Number of tabs (max 3)
+        headless: Run headless
+        on_status: Status callback (email, message)
+        on_task_complete: Callback when each task completes
+    
+    Returns:
+        List of VideoTask results
+    """
+    return asyncio.run(_run_multi_tab_async(
+        account, prompts, settings, num_tabs, headless, on_status, on_task_complete
+    ))
+
+
+async def _run_multi_tab_async(
+    account: Account,
+    prompts: List[str],
+    settings: VideoSettings,
+    num_tabs: int = 3,
+    headless: bool = True,
+    on_status: Optional[Callable] = None,
+    on_task_complete: Optional[Callable] = None
+) -> List[VideoTask]:
+    """Async multi-tab generation"""
+    generator = MultiTabVideoGenerator(
+        account=account,
+        num_tabs=min(num_tabs, 3),  # Max 3 tabs
+        headless=headless,
+        on_status=on_status
+    )
+    
+    try:
+        if not await generator.start():
+            return [VideoTask(
+                account_email=account.email,
+                prompt=p,
+                settings=settings,
+                status="failed",
+                error_message="Failed to start browser"
+            ) for p in prompts]
+        
+        results = await generator.generate_batch(prompts, settings, on_task_complete)
+        return results
+        
+    finally:
+        await generator.stop()

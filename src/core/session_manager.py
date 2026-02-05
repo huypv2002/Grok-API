@@ -72,10 +72,24 @@ class SessionManager:
                 on_status("Waiting for login completion...")
             time.sleep(5)
             
-            # Check if logged in
+            # Check if logged in - kiểm tra nhiều điều kiện
             current_url = controller.get_current_url()
-            if 'grok.com' in current_url:
-                cookies = controller.get_cookies()
+            cookies = controller.get_cookies()
+            
+            if on_status:
+                on_status(f"URL: {current_url}")
+            
+            # Login thành công nếu:
+            # 1. URL chứa grok.com hoặc x.ai
+            # 2. Hoặc có cookie sso/sso-rw
+            is_logged_in = (
+                'grok.com' in current_url or 
+                'x.ai' in current_url or
+                'sso' in cookies or 
+                'sso-rw' in cookies
+            )
+            
+            if is_logged_in:
                 account.cookies = cookies
                 account.status = "logged_in"
                 account.last_login = datetime.now()
@@ -84,7 +98,7 @@ class SessionManager:
                 return True
             
             account.status = "error"
-            account.error_message = "Login failed - could not verify"
+            account.error_message = f"Login failed - URL: {current_url}"
             return False
             
         except Exception as e:
@@ -155,10 +169,24 @@ class SessionManager:
                 on_status("Waiting for login completion...")
             time.sleep(5)
             
-            # Check if logged in
+            # Check if logged in - kiểm tra nhiều điều kiện
             current_url = controller.get_current_url()
-            if 'grok.com' in current_url:
-                cookies = controller.get_cookies()
+            cookies = controller.get_cookies()
+            
+            if on_status:
+                on_status(f"URL: {current_url}")
+            
+            # Login thành công nếu:
+            # 1. URL chứa grok.com hoặc x.ai
+            # 2. Hoặc có cookie sso/sso-rw
+            is_logged_in = (
+                'grok.com' in current_url or 
+                'x.ai' in current_url or
+                'sso' in cookies or 
+                'sso-rw' in cookies
+            )
+            
+            if is_logged_in:
                 account.cookies = cookies
                 account.status = "logged_in"
                 account.last_login = datetime.now()
@@ -167,7 +195,7 @@ class SessionManager:
                 return controller
             
             account.status = "error"
-            account.error_message = "Login failed"
+            account.error_message = f"Login failed - URL: {current_url}"
             controller.close_browser()
             return None
             

@@ -39,6 +39,8 @@ class VideoTask:
     media_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     output_path: Optional[str] = None
+    user_data_dir: Optional[str] = None  # Browser profile dir for download
+    account_cookies: Optional[dict] = None  # Account cookies for download
     created_at: datetime = field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None

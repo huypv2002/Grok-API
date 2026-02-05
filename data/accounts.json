@@ -2,12 +2,35 @@
   "accounts": [
     {
       "email": "chidanguvn68c4@outlook.com",
-      "password_encrypted": "gAAAAABpgvNKBXd7acdYwRrAPPS_gFXJtoXQTIboEGEuKdEQxzSimn2Xl0uywMzbag9RYHyTGdzJdRrxXC1noefWshOuKMRS2A==",
-      "fingerprint_id": "b7232d99-f04a-41e8-9c74-312e225c173f",
-      "status": "error",
-      "cookies": null,
-      "last_login": null,
-      "error_message": "Message: Service /Users/phamvanhuy/Library/Application Support/undetected_chromedriver/undetected_chromedriver unexpectedly exited. Status code was: -9\n"
+      "password_encrypted": "gAAAAABphCgP3aGpC_TZV0aiC-dDPqhMUKPddquW6fy9uzEAIK57zeLO_4cr_Zrl2mbUv-O944ot27U8jD6Za0LfXy9ZagUzsg==",
+      "fingerprint_id": "36e48d65-a7fc-4017-ab81-6dd6006afb15",
+      "status": "logged_in",
+      "cookies": {
+        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNjI2ZjZlYWMtYzY0YS00NzQwLTgyZjAtNDY1NzQ5YzljZWVkIn0.8daWmBDGpC0Nqlm5n-MA8wmpuiSJGL2riT6cHDY69P0",
+        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNjI2ZjZlYWMtYzY0YS00NzQwLTgyZjAtNDY1NzQ5YzljZWVkIn0.8daWmBDGpC0Nqlm5n-MA8wmpuiSJGL2riT6cHDY69P0",
+        "last-logged-in-with": "EMAIL",
+        "referrer": "grok-com",
+        "cf_clearance": "cajxiX154.xsRoqPAncT7CSxvj3ju5_hMQMWsyEGf1Y-1770268650-1.2.1.1-8BxdILKCDvzWBEOQUSU54YPakv3R6RW_o2Ty5z7E3wGB9evCz3K1qsWG5FECPU.ZJTbCdSp72Mvt_M.hdoubsEaIoOGpAKKw0_.PHRjwXA3kh4aWOSjVIyFXtDZIJHOuP0Q5RqDQxUZ1cjRSy8xSbg6Y3FgLg.PdKvb8T4vPe8ROl51sPG3WZxqoNcLFtyKGyERNIzZT4eNXQ_VIRiHhApvyonsJqKnmqJVHIusTBZY",
+        "__cf_bm": "uThhd.rlzAtzwOYcQUplD5jC2IcttEFjrWtjCkqAo_0-1770268648-1.0.1.1-EZTVoToVdDWvWQ1JCT6niKFu1vYToPcnWDeRzyJprtQEyA27YJXMV0pS4rCAdq2MtyIK0bUEiRlWw.9Fm6N01.btR9ICwLe.xVJlU1G8U_Q"
+      },
+      "last_login": "2026-02-05T12:19:22.927436",
+      "error_message": null
+    },
+    {
+      "email": "lanvo5og50ek8cb1280@outlook.com",
+      "password_encrypted": "gAAAAABphCgW6Y2MGfp_UlxKNyClOPrg2G8UR1YgqjMr2PRzpf_gjEumcOVy490CES70FcjgJOnovPO74yoWtL5GKHcbNTgBNQ==",
+      "fingerprint_id": "005b87b5-5abd-43cd-b7cd-83b53b95ac9d",
+      "status": "logged_in",
+      "cookies": {
+        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMmJmODg2ZGUtYWY4ZC00OTM0LWE1OWEtNzBhYTFlNjVhNzAxIn0.0UxKI2OGLc8P-ONLE9ONuzJn8pQ9KGLZy3k7L53wcd0",
+        "last-logged-in-with": "EMAIL",
+        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMmJmODg2ZGUtYWY4ZC00OTM0LWE1OWEtNzBhYTFlNjVhNzAxIn0.0UxKI2OGLc8P-ONLE9ONuzJn8pQ9KGLZy3k7L53wcd0",
+        "referrer": "grok-com",
+        "cf_clearance": "ix9nKOHRJlnbBEPWJP15r5TBNWz12iBOT0v9.fnw244-1770268711-1.2.1.1-NBHFfH7dyku8dYwTJWmHB6a8nLoXgU6CxILwxUKC4cY3BO3vd4N6miw2iP2E2W9XdOw1Net69BwPYxYUl0bR_4sCkYEsf1Zqv7BiwFL7pWWJ2cTed5EOwlcTbLHF6NU3UHVWDWPn5lemfWY5dbh8dUpMxTV.38.0QFX.nOcTACMJI.nCUnjc9z4fDiX8dxlGvIzdPncR1yjmCVq5rc8h7EdKj2sf6TsK22HBHJgy0IA",
+        "__cf_bm": ".jblF0P2kIZ7L6behweuSPbL0qD.JlPZzJ4tocxj7f8-1770268710-1.0.1.1-VZiPb.zNJZAnh_wWLggUsfacYwuXdh6oTXyH4W7NBOjqDp93WKMSMKPI.DFl3_DaJhx6Gmv1F7xOtzsLOi38XX65RtyCNk1jtMPAWdKfHRQ"
+      },
+      "last_login": "2026-02-05T12:18:47.411307",
+      "error_message": null
     }
   ]
 }

@@ -2,6 +2,7 @@
 import time
 import os
 import subprocess
+import logging
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -9,9 +10,27 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 from typing import Optional
 from pathlib import Path
+from datetime import datetime
+
+# Setup logging - INFO level để giảm noise
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+# Tắt debug của selenium/urllib3
+logging.getLogger("selenium").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+# Try to install chromedriver automatically
+try:
+    import chromedriver_autoinstaller
+    chromedriver_autoinstaller.install()
+except:
+    pass
 
 LOGIN_URL = "https://accounts.x.ai/sign-in?redirect=grok-com&email=true"
-PROFILES_DIR = Path("data/profiles")
+PROFILES_DIR = Path("data/profiles").absolute()
+
+# Window position counter
+_window_index = 0
 
 
 class BrowserController:
@@ -20,49 +39,115 @@ class BrowserController:
         self.driver: Optional[uc.Chrome] = None
         self.profile_dir = PROFILES_DIR / fingerprint_id
     
-    def open_browser(self, headless: bool = False) -> uc.Chrome:
-        """Open Chrome browser - simple version"""
+    def open_browser(self, headless: bool = False, small_window: bool = True) -> uc.Chrome:
+        """Open Chrome browser - small window at top-left corner"""
+        global _window_index
+        
+        # Tạo profile directory
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        profile_path = str(self.profile_dir.absolute())
+        profile_path = str(self.profile_dir)
+        
+        logger.info(f"[BROWSER] Profile: {self.fingerprint_id}, Headless: {headless}")
         
         # Get Chrome version
-        chrome_version = 144
+        chrome_version = 131
         try:
             result = subprocess.run(
                 ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '--version'],
                 capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
-                chrome_version = int(result.stdout.strip().split()[-1].split('.')[0])
-        except:
-            pass
+                version_str = result.stdout.strip().split()[-1]
+                chrome_version = int(version_str.split('.')[0])
+                logger.info(f"[BROWSER] Chrome version: {chrome_version}")
+        except Exception as e:
+            logger.warning(f"[BROWSER] Could not detect Chrome version: {e}")
         
-        print(f"Opening browser with Chrome {chrome_version}...")
+        # Create driver với retry
+        max_retries = 3
+        last_error = None
         
-        # Simple options
-        options = uc.ChromeOptions()
-        options.add_argument("--no-first-run")
-        options.add_argument("--no-service-autorun") 
-        options.add_argument("--password-store=basic")
-        options.add_argument("--disable-popup-blocking")
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"[BROWSER] Creating driver (attempt {attempt + 1}/{max_retries})...")
+                
+                # Create NEW options for each attempt
+                options = uc.ChromeOptions()
+                options.add_argument("--no-first-run")
+                options.add_argument("--no-service-autorun") 
+                options.add_argument("--password-store=basic")
+                options.add_argument("--disable-popup-blocking")
+                
+                # Headless mode - dùng headless=True trong uc.Chrome thay vì argument
+                if headless:
+                    options.add_argument("--disable-gpu")
+                    options.add_argument("--no-sandbox")
+                    options.add_argument("--disable-dev-shm-usage")
+                elif small_window:
+                    options.add_argument("--window-size=400,300")
+                    options.add_argument("--window-position=0,0")
+                
+                self.driver = uc.Chrome(
+                    options=options,
+                    user_data_dir=profile_path,
+                    version_main=chrome_version,
+                    headless=headless,  # Dùng param này thay vì --headless argument
+                )
+                
+                # Đợi driver khởi tạo
+                time.sleep(3)
+                
+                # Test driver
+                if self.driver:
+                    try:
+                        url = self.driver.current_url
+                        logger.info(f"[BROWSER] Ready! URL: {url}")
+                        break
+                    except Exception as e:
+                        logger.error(f"[BROWSER] Driver test failed: {e}")
+                        last_error = e
+                        if attempt < max_retries - 1:
+                            try:
+                                self.driver.quit()
+                            except:
+                                pass
+                            self.driver = None
+                            time.sleep(2)
+                            continue
+                        
+            except Exception as e:
+                logger.error(f"[BROWSER] Driver creation failed: {e}")
+                last_error = e
+                if attempt < max_retries - 1:
+                    time.sleep(3)
         
-        # Create driver
-        self.driver = uc.Chrome(
-            options=options,
-            user_data_dir=profile_path,
-            version_main=chrome_version,
-        )
+        if not self.driver:
+            raise Exception(f"Failed to create browser: {last_error}")
         
-        print("Browser opened successfully!")
+        # Set window position
+        if small_window and self.driver and not headless:
+            try:
+                offset = (_window_index % 5) * 10
+                self.driver.set_window_position(offset, offset)
+                self.driver.set_window_size(400, 300)
+                _window_index += 1
+            except:
+                pass
+        
+        logger.info("[BROWSER] Browser opened successfully!")
         return self.driver
     
     def navigate_to(self, url: str, wait_time: int = 5) -> None:
         """Navigate to URL"""
         if self.driver:
-            print(f"Navigating to: {url}")
+            logger.info(f"[NAV] Navigating to: {url}")
             self.driver.get(url)
             time.sleep(wait_time)
-            print(f"Current URL: {self.driver.current_url}")
+            current_url = self.driver.current_url
+            logger.info(f"[NAV] Current URL: {current_url}")
+            
+            # Debug: take screenshot in headless mode
+            self._debug_screenshot("after_navigate")
     
     def fill_input(self, selector: str, value: str, by: str = By.CSS_SELECTOR) -> None:
         """Fill input field"""
@@ -103,6 +188,7 @@ class BrowserController:
     def set_cookies(self, cookies: dict, domain: str = ".grok.com") -> None:
         """Set cookies"""
         if self.driver:
+            logger.debug(f"[COOKIES] Setting {len(cookies)} cookies for domain {domain}")
             for name, value in cookies.items():
                 try:
                     self.driver.add_cookie({
@@ -111,8 +197,9 @@ class BrowserController:
                         'domain': domain,
                         'path': '/'
                     })
+                    logger.debug(f"[COOKIES] Set cookie: {name}")
                 except Exception as e:
-                    print(f"Cookie error {name}: {e}")
+                    logger.warning(f"[COOKIES] Cookie error {name}: {e}")
     
     def close_browser(self) -> None:
         """Close browser"""
@@ -126,13 +213,19 @@ class BrowserController:
     def get_current_url(self) -> str:
         """Get current URL"""
         if self.driver:
-            return self.driver.current_url
+            try:
+                return self.driver.current_url
+            except:
+                return ""
         return ""
     
     def get_page_source(self) -> str:
         """Get page source"""
         if self.driver:
-            return self.driver.page_source
+            try:
+                return self.driver.page_source
+            except:
+                return ""
         return ""
     
     def find_element(self, selector: str, by: str = By.CSS_SELECTOR):
@@ -156,7 +249,10 @@ class BrowserController:
     def execute_script(self, script: str, *args):
         """Execute JavaScript"""
         if self.driver:
-            return self.driver.execute_script(script, *args)
+            try:
+                return self.driver.execute_script(script, *args)
+            except:
+                return None
         return None
     
     def send_keys(self, keys: str) -> None:
@@ -173,5 +269,165 @@ class BrowserController:
             path = Path("data") / filename
             path.parent.mkdir(parents=True, exist_ok=True)
             self.driver.save_screenshot(str(path))
+            logger.info(f"[SCREENSHOT] Saved: {path}")
             return str(path)
         return ""
+    
+    def _debug_screenshot(self, prefix: str = "debug") -> str:
+        """Take debug screenshot with timestamp"""
+        if self.driver:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"debug_{prefix}_{timestamp}.png"
+            return self.screenshot(filename)
+        return ""
+    
+    def debug_page_info(self) -> dict:
+        """Get debug info about current page"""
+        info = {
+            "url": "",
+            "title": "",
+            "cookies_count": 0,
+            "page_length": 0,
+            "has_cf_challenge": False,
+            "has_turnstile": False,
+        }
+        
+        if self.driver:
+            try:
+                info["url"] = self.driver.current_url
+                info["title"] = self.driver.title
+                cookies = self.get_cookies()
+                info["cookies_count"] = len(cookies)
+                info["has_cf_clearance"] = "cf_clearance" in cookies
+                
+                page_source = self.driver.page_source
+                info["page_length"] = len(page_source)
+                info["has_cf_challenge"] = "Just a moment" in page_source or "Checking your browser" in page_source
+                info["has_turnstile"] = "turnstile" in page_source.lower() or "challenges.cloudflare.com" in page_source
+                
+                logger.info(f"[DEBUG] Page info: URL={info['url']}, Title={info['title']}")
+                logger.info(f"[DEBUG] Cookies: {info['cookies_count']}, CF clearance: {info.get('has_cf_clearance', False)}")
+                logger.info(f"[DEBUG] CF Challenge: {info['has_cf_challenge']}, Turnstile: {info['has_turnstile']}")
+                
+            except Exception as e:
+                logger.error(f"[DEBUG] Error getting page info: {e}")
+        
+        return info
+    
+    def handle_turnstile(self, timeout: int = 60) -> bool:
+        """Handle Cloudflare Turnstile challenge"""
+        if not self.driver:
+            return False
+        
+        logger.info(f"[TURNSTILE] Starting turnstile handler (timeout={timeout}s)")
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                turnstile_selectors = [
+                    'iframe[src*="challenges.cloudflare.com"]',
+                    'iframe[src*="turnstile"]',
+                    '#cf-turnstile-response',
+                    '.cf-turnstile',
+                ]
+                
+                turnstile_found = False
+                for selector in turnstile_selectors:
+                    elements = self.find_elements(selector)
+                    if elements:
+                        turnstile_found = True
+                        logger.debug(f"[TURNSTILE] Found turnstile element: {selector}")
+                        break
+                
+                if not turnstile_found:
+                    logger.info("[TURNSTILE] No turnstile found - challenge passed!")
+                    return True
+                
+                try:
+                    iframes = self.driver.find_elements(By.CSS_SELECTOR, 'iframe[src*="challenges.cloudflare.com"]')
+                    if iframes:
+                        logger.debug("[TURNSTILE] Switching to iframe...")
+                        self.driver.switch_to.frame(iframes[0])
+                        checkbox = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="checkbox"]')
+                        if checkbox:
+                            logger.debug("[TURNSTILE] Clicking checkbox...")
+                            checkbox[0].click()
+                        self.driver.switch_to.default_content()
+                except:
+                    try:
+                        self.driver.switch_to.default_content()
+                    except:
+                        pass
+                
+                time.sleep(2)
+                
+            except Exception as e:
+                logger.error(f"[TURNSTILE] Error: {e}")
+                time.sleep(1)
+        
+        logger.warning("[TURNSTILE] Timeout - challenge not passed")
+        return False
+
+    def refresh_cf_clearance(self, timeout: int = 60) -> Optional[str]:
+        """
+        Refresh cf_clearance by navigating to grok.com and waiting for Cloudflare challenge.
+        Returns new cf_clearance value or None if failed.
+        """
+        if not self.driver:
+            return None
+        
+        logger.info("[CF] Starting cf_clearance refresh...")
+        
+        # Navigate to grok.com
+        try:
+            logger.info("[CF] Navigating to grok.com...")
+            self.driver.get("https://grok.com")
+        except Exception as e:
+            logger.error(f"[CF] Navigation error: {e}")
+        
+        start_time = time.time()
+        check_count = 0
+        
+        while time.time() - start_time < timeout:
+            check_count += 1
+            elapsed = int(time.time() - start_time)
+            
+            # Check for Cloudflare challenge page
+            try:
+                page_source = self.driver.page_source
+                current_url = self.driver.current_url
+                
+                logger.debug(f"[CF] Check #{check_count} ({elapsed}s) - URL: {current_url}")
+                
+                # Check if still on challenge page
+                if "Just a moment" in page_source or "Checking your browser" in page_source:
+                    logger.info(f"[CF] Challenge page detected, waiting... ({elapsed}s)")
+                    
+                    # Take debug screenshot every 10 seconds
+                    if check_count % 5 == 0:
+                        self._debug_screenshot(f"cf_challenge_{elapsed}s")
+                    
+                    # Try to click turnstile checkbox if present
+                    self.handle_turnstile(timeout=5)
+                    time.sleep(2)
+                    continue
+                
+                # Check if we passed the challenge
+                cookies = self.get_cookies()
+                cf_clearance = cookies.get('cf_clearance')
+                
+                if cf_clearance:
+                    logger.info(f"[CF] SUCCESS! Got cf_clearance: {cf_clearance[:30]}...")
+                    self._debug_screenshot("cf_success")
+                    return cf_clearance
+                
+                logger.debug(f"[CF] No cf_clearance yet, cookies: {list(cookies.keys())}")
+                time.sleep(2)
+                
+            except Exception as e:
+                logger.error(f"[CF] Error during check: {e}")
+                time.sleep(1)
+        
+        logger.error(f"[CF] FAILED to get cf_clearance after {timeout}s")
+        self._debug_screenshot("cf_failed")
+        return None
