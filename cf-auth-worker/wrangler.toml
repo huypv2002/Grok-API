@@ -1,0 +1,8 @@
+name = "grok-auth-api"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "grok-video-db"
+database_id = "c6e3d95c-0c01-4d1d-b030-5a9ac2dbd72c"

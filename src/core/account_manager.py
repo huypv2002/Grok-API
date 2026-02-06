@@ -84,3 +84,38 @@ class AccountManager:
                 self.accounts[account.email] = account
         except Exception:
             pass
+
+    # --- Login Temp JSON ---
+
+    TEMP_FILE = Path("data/login_temp.json")
+
+    def export_to_temp(self) -> int:
+        """Export all accounts (email + plain password) to login_temp.json.
+        Returns number of accounts exported."""
+        entries = []
+        for acc in self.accounts.values():
+            plain_pwd = decrypt_password(acc.password)
+            if plain_pwd:
+                entries.append({"email": acc.email, "password": plain_pwd})
+        self.TEMP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.TEMP_FILE.write_text(json.dumps({"accounts": entries}, indent=2, ensure_ascii=False))
+        return len(entries)
+
+    def import_from_temp(self) -> tuple[int, int]:
+        """Import accounts from login_temp.json.
+        Returns (added, skipped) counts."""
+        if not self.TEMP_FILE.exists():
+            raise FileNotFoundError("File login_temp.json không tồn tại")
+        data = json.loads(self.TEMP_FILE.read_text())
+        added, skipped = 0, 0
+        for entry in data.get("accounts", []):
+            email = entry.get("email", "").strip()
+            password = entry.get("password", "").strip()
+            if not email or not password:
+                continue
+            if email in self.accounts:
+                skipped += 1
+            else:
+                self.add_account(email, password)
+                added += 1
+        return added, skipped

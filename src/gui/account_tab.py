@@ -213,14 +213,18 @@ class AccountTab(QWidget):
         self.delete_btn = QPushButton("🗑️ Delete")
         self.login_btn = QPushButton("🔑 Login")
         self.login_all_btn = QPushButton("🔑 Login All")
+        self.export_btn = QPushButton("📤 Export")
+        self.import_btn = QPushButton("📥 Import")
         
         self.add_btn.clicked.connect(self._add_account)
         self.edit_btn.clicked.connect(self._edit_account)
         self.delete_btn.clicked.connect(self._delete_account)
         self.login_btn.clicked.connect(self._login_account)
         self.login_all_btn.clicked.connect(self._login_all)
+        self.export_btn.clicked.connect(self._export_temp)
+        self.import_btn.clicked.connect(self._import_temp)
         
-        for btn in [self.add_btn, self.edit_btn, self.delete_btn, self.login_btn, self.login_all_btn]:
+        for btn in [self.add_btn, self.edit_btn, self.delete_btn, self.login_btn, self.login_all_btn, self.export_btn, self.import_btn]:
             btn.setCursor(Qt.PointingHandCursor)
             btn_layout.addWidget(btn)
         
@@ -349,7 +353,7 @@ class AccountTab(QWidget):
         self.table.setStyleSheet(table_style)
         self.log.setStyleSheet(log_style)
         
-        for btn in [self.edit_btn, self.delete_btn, self.login_btn, self.login_all_btn]:
+        for btn in [self.edit_btn, self.delete_btn, self.login_btn, self.login_all_btn, self.export_btn, self.import_btn]:
             btn.setStyleSheet(btn_style)
         
         # Special buttons
@@ -373,6 +377,20 @@ class AccountTab(QWidget):
                 color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px;
             }
             QPushButton:hover { background: #2980b9; }
+        """)
+        self.export_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8e44ad, stop:1 #9b59b6);
+                color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px;
+            }
+            QPushButton:hover { background: #9b59b6; }
+        """)
+        self.import_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e67e22, stop:1 #f39c12);
+                color: white; border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px;
+            }
+            QPushButton:hover { background: #f39c12; }
         """)
 
     
@@ -486,3 +504,26 @@ class AccountTab(QWidget):
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
         self.log.append(f"[{ts}] {msg}")
+
+    def _export_temp(self):
+        try:
+            count = self.account_manager.export_to_temp()
+            self._log(f"📤 Exported {count} accounts → data/login_temp.json")
+            QMessageBox.information(self, "Export", f"Đã export {count} tài khoản ra data/login_temp.json")
+        except Exception as e:
+            self._log(f"❌ Export failed: {e}")
+            QMessageBox.warning(self, "Error", str(e))
+
+    def _import_temp(self):
+        try:
+            added, skipped = self.account_manager.import_from_temp()
+            self._refresh_table()
+            self.account_changed.emit()
+            self._log(f"📥 Imported: {added} added, {skipped} skipped (already exist)")
+            QMessageBox.information(self, "Import", f"Thêm {added} tài khoản, bỏ qua {skipped} (đã tồn tại)")
+        except FileNotFoundError:
+            self._log("❌ File data/login_temp.json không tồn tại")
+            QMessageBox.warning(self, "Error", "File data/login_temp.json không tồn tại.\nHãy Export trước hoặc tạo file thủ công.")
+        except Exception as e:
+            self._log(f"❌ Import failed: {e}")
+            QMessageBox.warning(self, "Error", str(e))

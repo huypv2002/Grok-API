@@ -1,10 +1,12 @@
 """Main Window - Modern UI with 3D Animated Background"""
+import json
 import math
+from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
-    QStatusBar, QLabel, QPushButton, QStackedWidget
+    QStatusBar, QLabel, QPushButton, QStackedWidget, QMessageBox
 )
-from PySide6.QtCore import Qt, QTimer, QPointF, Property, QPropertyAnimation
+from PySide6.QtCore import Qt, QTimer, QPointF, Property, QPropertyAnimation, QThread, Signal
 from PySide6.QtGui import QFont, QPainter, QLinearGradient, QRadialGradient, QColor, QPen
 from .account_tab import AccountTab
 from .video_gen_tab import VideoGenTab
@@ -12,6 +14,7 @@ from .history_tab import HistoryTab
 from ..core.account_manager import AccountManager
 from ..core.session_manager import SessionManager
 from ..core.history_manager import HistoryManager
+from ..core.d1_manager import D1Manager
 
 
 class Particle3D:
@@ -187,20 +190,89 @@ class AnimatedBg(QWidget):
         painter.restore()
 
 
+LOGIN_TEMP_FILE = Path("data/login_temp.json")
+CHECK_API_URL = "https://grok-auth-api.kh431248.workers.dev/check"
+
+
+class SubscriptionChecker(QThread):
+    """Check gói qua D1 API."""
+    result = Signal(bool, str, str)  # ok, plan, expires_at
+
+    def __init__(self, username):
+        super().__init__()
+        self.username = username
+
+    def run(self):
+        import httpx
+        try:
+            r = httpx.post(CHECK_API_URL, json={"username": self.username}, timeout=10)
+            data = r.json()
+            if data.get("ok"):
+                self.result.emit(True, data.get("plan", ""), data.get("expires_at", ""))
+            else:
+                self.result.emit(False, "", data.get("error", "Gói đã hết hạn"))
+        except Exception as e:
+            self.result.emit(True, "", "")  # Lỗi mạng → không block user
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("🎬 Grok Video Generator")
         self.setMinimumSize(1200, 800)
         self.is_dark = True
-        
+        self._logged_in_user = ""
+        self._sub_checker = None
+
+        # Load username từ login_temp
+        if LOGIN_TEMP_FILE.exists():
+            try:
+                data = json.loads(LOGIN_TEMP_FILE.read_text())
+                self._logged_in_user = data.get("username", "")
+            except Exception:
+                pass
+
         # Initialize managers
         self.account_manager = AccountManager()
         self.session_manager = SessionManager()
         self.history_manager = HistoryManager()
-        
+        self.d1_manager = D1Manager()
+
         self._setup_ui()
         self._apply_theme()
+
+        # Subscription monitoring — check mỗi 5 phút
+        self._sub_timer = QTimer()
+        self._sub_timer.timeout.connect(self._check_subscription)
+        self._sub_timer.start(5 * 60 * 1000)  # 5 phút
+        # Check ngay lần đầu sau 3 giây
+        QTimer.singleShot(3000, self._check_subscription)
+
+    def _check_subscription(self):
+        if not self._logged_in_user:
+            return
+        self._sub_checker = SubscriptionChecker(self._logged_in_user)
+        self._sub_checker.result.connect(self._on_sub_check)
+        self._sub_checker.start()
+
+    def _on_sub_check(self, ok, plan, expires_at):
+        if not ok:
+            self._sub_timer.stop()
+            msg = QMessageBox(self)
+            msg.setWindowTitle("⚠️ Gói đã hết hạn")
+            msg.setText(
+                f"Gói của bạn đã hết hạn.\n"
+                f"Vui lòng liên hệ admin để gia hạn.\n\n"
+                f"Ứng dụng sẽ đóng khi bạn bấm OK."
+            )
+            msg.setIcon(QMessageBox.Warning)
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.exec()
+            # Xóa login temp và thoát
+            if LOGIN_TEMP_FILE.exists():
+                LOGIN_TEMP_FILE.unlink()
+            import os
+            os._exit(0)
     
     def _setup_ui(self):
         # Central widget
@@ -212,9 +284,11 @@ class MainWindow(QMainWindow):
         
         # Animated background
         self.bg = AnimatedBg(central)
+        self.bg.lower()  # Đảm bảo bg nằm dưới cùng
         
-        # Content container
+        # Content container (raised above bg)
         content = QWidget()
+        content.setAttribute(Qt.WA_TranslucentBackground)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(20, 15, 20, 15)
         content_layout.setSpacing(12)
@@ -243,9 +317,9 @@ class MainWindow(QMainWindow):
         
         self.tab_btns = []
         tabs_info = [
-            ("👤 Accounts", 0),
-            ("🎬 Generate", 1),
-            ("📜 History", 2)
+            ("👤 Tài khoản", 0),
+            ("🎬 Tạo Video", 1),
+            ("📜 Lịch sử", 2),
         ]
         
         for text, idx in tabs_info:
@@ -275,7 +349,7 @@ class MainWindow(QMainWindow):
         
         # Status bar
         status_layout = QHBoxLayout()
-        self.status_label = QLabel("✅ Ready")
+        self.status_label = QLabel("✅ Sẵn sàng")
         self.account_count = QLabel()
         status_layout.addWidget(self.status_label)
         status_layout.addStretch()
@@ -283,6 +357,10 @@ class MainWindow(QMainWindow):
         content_layout.addLayout(status_layout)
         
         main_layout.addWidget(content)
+        content.raise_()  # Đảm bảo content nằm trên bg
+        
+        # Ensure content is above animated background
+        content.raise_()
         
         # Connect signals
         self.account_tab.account_changed.connect(self._on_account_changed)
@@ -426,14 +504,14 @@ class MainWindow(QMainWindow):
     def _update_account_count(self):
         accounts = self.account_manager.get_all_accounts()
         logged_in = sum(1 for a in accounts if a.status == "logged_in")
-        self.account_count.setText(f"👤 {logged_in}/{len(accounts)} accounts")
+        self.account_count.setText(f"👤 {logged_in}/{len(accounts)} tài khoản")
     
     def _update_status(self):
         workers = len(self.video_gen_tab.workers) if hasattr(self.video_gen_tab, 'workers') else 0
         if workers > 0:
-            self.status_label.setText(f"🔄 Running {workers} task(s)...")
+            self.status_label.setText(f"🔄 Đang chạy {workers} tác vụ...")
         else:
-            self.status_label.setText("✅ Ready")
+            self.status_label.setText("✅ Sẵn sàng")
     
     def closeEvent(self, event):
         if hasattr(self.video_gen_tab, '_stop_generation'):

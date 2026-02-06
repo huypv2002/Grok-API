@@ -992,9 +992,9 @@ class MultiTabVideoGenerator:
                 await tab.get(IMAGINE_URL)
                 await asyncio.sleep(2)
             
-            # Step 2: Select Video mode
+            # Step 2: Select Video mode and apply settings
             self._log("🎬 Selecting Video mode...", tab_id)
-            await self._select_video_mode_on_tab(tab, tab_id)
+            await self._select_video_mode_on_tab(tab, tab_id, settings)
             await asyncio.sleep(1.5)
             
             # Step 3: Enter prompt
@@ -1038,9 +1038,23 @@ class MultiTabVideoGenerator:
             
             # Step 6: STAY on post page and wait for video to render
             self._log("⏳ Waiting for video to render...", tab_id)
-            video_ready = await self._wait_for_video_ready_on_tab(tab, tab_id, timeout=300)
+            video_status = await self._wait_for_video_ready_on_tab(tab, tab_id, timeout=300)
             
-            if video_ready:
+            # Handle rejected video - retry with same prompt
+            if video_status == 'rejected':
+                if retry_count < MAX_RETRIES:
+                    self._log(f"🔄 Video bị từ chối, thử lại ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                    self.tab_ready[tab_id] = True
+                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1)
+                else:
+                    task.status = "failed"
+                    task.error_message = "Video bị từ chối sau khi thử lại"
+                    self.tab_ready[tab_id] = True
+                    return task
+            
+            if video_status == 'ready':
                 # Step 7: Click share button to create share link (makes video downloadable)
                 self._log("🔗 Creating share link...", tab_id)
                 await self._click_share_button_on_tab(tab, tab_id)
@@ -1052,8 +1066,21 @@ class MultiTabVideoGenerator:
                 if output_path:
                     task.output_path = output_path
                     self._log(f"✅ Downloaded: {os.path.basename(output_path)}", tab_id)
-            else:
-                self._log("⚠️ Video render timeout, saving for later download", tab_id)
+            elif video_status == 'timeout':
+                # RETRY on timeout: refresh tab and regenerate
+                if retry_count < MAX_RETRIES:
+                    self._log(f"⏰ Render timeout (>300s), retrying ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                    self.tab_ready[tab_id] = True
+                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1)
+                else:
+                    self._log("⚠️ Video render timeout after retries, saving for later download", tab_id)
+            elif video_status == 'stopped':
+                task.status = "failed"
+                task.error_message = "Generation stopped"
+                self.tab_ready[tab_id] = True
+                return task
             
             task.status = "completed"
             task.completed_at = datetime.now()
@@ -1081,16 +1108,29 @@ class MultiTabVideoGenerator:
             self.tab_ready[tab_id] = True
             return task
     
-    async def _wait_for_video_ready_on_tab(self, tab, tab_id: int, timeout: int = 300) -> bool:
-        """Wait for video to be ready on post page (no opacity-50/pointer-events-none)"""
+    async def _wait_for_video_ready_on_tab(self, tab, tab_id: int, timeout: int = 300) -> str:
+        """
+        Wait for video to be ready on post page.
+        Returns:
+            'ready' - video is ready for download
+            'rejected' - video was rejected (eye-off icon visible)
+            'timeout' - timeout waiting for video
+            'stopped' - generation was stopped
+        """
         start_time = time.time()
         
         while time.time() - start_time < timeout:
             if not self._running:
-                return False
+                return 'stopped'
             
             status = await tab.evaluate("""
                 (function() {
+                    // Check for rejected video (eye-off icon)
+                    var eyeOffIcon = document.querySelector('svg.lucide-eye-off');
+                    if (eyeOffIcon) {
+                        return {ready: false, type: 'rejected', rejected: true};
+                    }
+                    
                     // Find the download button
                     var downloadBtn = document.querySelector('button[aria-label="Tải xuống"]');
                     if (!downloadBtn) {
@@ -1131,9 +1171,14 @@ class MultiTabVideoGenerator:
                 })()
             """)
             
+            # Check for rejected video
+            if status and status.get('rejected'):
+                self._log("⚠️ Video bị từ chối (eye-off icon)", tab_id)
+                return 'rejected'
+            
             if status and status.get('ready'):
                 self._log("✅ Video ready!", tab_id)
-                return True
+                return 'ready'
             
             elapsed = int(time.time() - start_time)
             if elapsed % 30 == 0 and elapsed > 0:
@@ -1141,7 +1186,7 @@ class MultiTabVideoGenerator:
             
             await asyncio.sleep(3)
         
-        return False
+        return 'timeout'
     
     async def _click_share_button_on_tab(self, tab, tab_id: int) -> bool:
         """Click share button to create share link"""
@@ -1247,8 +1292,9 @@ class MultiTabVideoGenerator:
             traceback.print_exc()
             return None
             return None
-    async def _select_video_mode_on_tab(self, tab, tab_id: int) -> None:
-        """Select Video mode on a specific tab"""
+    
+    async def _select_video_mode_on_tab(self, tab, tab_id: int, settings: VideoSettings = None) -> None:
+        """Select Video mode and apply settings on a specific tab"""
         try:
             # Wait for trigger button
             trigger_info = None
@@ -1309,6 +1355,11 @@ class MultiTabVideoGenerator:
                 ))
                 await asyncio.sleep(1)
             
+            # Apply video settings BEFORE clicking Video option
+            if settings:
+                await self._apply_video_settings_in_menu(tab, tab_id, settings)
+                await asyncio.sleep(0.5)
+            
             # Click Video option
             await tab.evaluate("""
                 (function() {
@@ -1332,6 +1383,70 @@ class MultiTabVideoGenerator:
             
         except Exception as e:
             self._log(f"⚠️ Mode select error: {e}", tab_id)
+    
+    async def _apply_video_settings_in_menu(self, tab, tab_id: int, settings: VideoSettings) -> None:
+        """Apply video settings (duration, resolution, aspect ratio) in the open menu"""
+        try:
+            # Map settings to button labels
+            duration_label = f"{settings.video_length}s"  # "6s" or "10s"
+            resolution_label = settings.resolution  # "480p" or "720p"
+            aspect_label = settings.aspect_ratio  # "2:3", "3:2", "1:1", "9:16", "16:9"
+            
+            self._log(f"⚙️ Applying settings: {duration_label}, {resolution_label}, {aspect_label}", tab_id)
+            
+            # Click duration button
+            duration_result = await tab.evaluate(f"""
+                (function() {{
+                    var buttons = document.querySelectorAll('button[aria-label]');
+                    for (var btn of buttons) {{
+                        var label = btn.getAttribute('aria-label');
+                        if (label === '{duration_label}') {{
+                            btn.click();
+                            return 'clicked ' + label;
+                        }}
+                    }}
+                    return 'duration not found';
+                }})()
+            """)
+            self._log(f"   Duration: {duration_result}", tab_id)
+            await asyncio.sleep(0.3)
+            
+            # Click resolution button
+            resolution_result = await tab.evaluate(f"""
+                (function() {{
+                    var buttons = document.querySelectorAll('button[aria-label]');
+                    for (var btn of buttons) {{
+                        var label = btn.getAttribute('aria-label');
+                        if (label === '{resolution_label}') {{
+                            btn.click();
+                            return 'clicked ' + label;
+                        }}
+                    }}
+                    return 'resolution not found';
+                }})()
+            """)
+            self._log(f"   Resolution: {resolution_result}", tab_id)
+            await asyncio.sleep(0.3)
+            
+            # Click aspect ratio button
+            aspect_result = await tab.evaluate(f"""
+                (function() {{
+                    var buttons = document.querySelectorAll('button[aria-label]');
+                    for (var btn of buttons) {{
+                        var label = btn.getAttribute('aria-label');
+                        if (label === '{aspect_label}') {{
+                            btn.click();
+                            return 'clicked ' + label;
+                        }}
+                    }}
+                    return 'aspect not found';
+                }})()
+            """)
+            self._log(f"   Aspect: {aspect_result}", tab_id)
+            await asyncio.sleep(0.3)
+            
+        except Exception as e:
+            self._log(f"⚠️ Settings error: {e}", tab_id)
     
     async def _enter_prompt_on_tab(self, tab, prompt: str, tab_id: int) -> bool:
         """Enter prompt on a specific tab"""

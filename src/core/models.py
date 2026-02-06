@@ -16,15 +16,15 @@ class Account:
 
 @dataclass
 class VideoSettings:
-    aspect_ratio: Literal["16:9", "9:16", "1:1"] = "16:9"
+    aspect_ratio: str = "16:9"  # 2:3, 3:2, 1:1, 9:16, 16:9
     video_length: Literal[6, 10] = 6
-    resolution: Literal["720p", "1080p"] = "720p"
+    resolution: Literal["480p", "720p"] = "480p"
     
     def validate(self) -> bool:
         return (
-            self.aspect_ratio in ["16:9", "9:16", "1:1"] and
+            self.aspect_ratio in ["2:3", "3:2", "1:1", "9:16", "16:9"] and
             self.video_length in [6, 10] and
-            self.resolution in ["720p", "1080p"]
+            self.resolution in ["480p", "720p"]
         )
 
 @dataclass
