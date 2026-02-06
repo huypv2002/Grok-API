@@ -196,7 +196,7 @@ CHECK_API_URL = "https://grok-auth-api.kh431248.workers.dev/check"
 
 class SubscriptionChecker(QThread):
     """Check gói qua D1 API."""
-    result = Signal(bool, str, str)  # ok, plan, expires_at
+    result = Signal(bool, str, str)  # ok, plan, error_or_expires
 
     def __init__(self, username):
         super().__init__()
@@ -204,13 +204,19 @@ class SubscriptionChecker(QThread):
 
     def run(self):
         import httpx
+        from .login_dialog import get_machine_id
         try:
-            r = httpx.post(CHECK_API_URL, json={"username": self.username}, timeout=10)
+            mid = get_machine_id()
+            r = httpx.post(CHECK_API_URL, json={
+                "username": self.username,
+                "machine_id": mid
+            }, timeout=10)
             data = r.json()
             if data.get("ok"):
                 self.result.emit(True, data.get("plan", ""), data.get("expires_at", ""))
             else:
-                self.result.emit(False, "", data.get("error", "Gói đã hết hạn"))
+                error = data.get("error", "Gói đã hết hạn")
+                self.result.emit(False, "", error)
         except Exception as e:
             self.result.emit(True, "", "")  # Lỗi mạng → không block user
 
@@ -251,6 +257,9 @@ class MainWindow(QMainWindow):
     def _check_subscription(self):
         if not self._logged_in_user:
             return
+        # Tránh tạo nhiều checker cùng lúc
+        if self._sub_checker and self._sub_checker.isRunning():
+            return
         self._sub_checker = SubscriptionChecker(self._logged_in_user)
         self._sub_checker.result.connect(self._on_sub_check)
         self._sub_checker.start()
@@ -258,11 +267,13 @@ class MainWindow(QMainWindow):
     def _on_sub_check(self, ok, plan, expires_at):
         if not ok:
             self._sub_timer.stop()
+            # Phân biệt lý do: hết hạn vs bị khóa
+            reason = expires_at if expires_at else "Gói đã hết hạn hoặc tài khoản bị khóa"
             msg = QMessageBox(self)
             msg.setWindowTitle("⚠️ Gói đã hết hạn")
             msg.setText(
-                f"Gói của bạn đã hết hạn.\n"
-                f"Vui lòng liên hệ admin để gia hạn.\n\n"
+                f"⚠️ {reason}\n\n"
+                f"Vui lòng liên hệ admin để gia hạn.\n"
                 f"Ứng dụng sẽ đóng khi bạn bấm OK."
             )
             msg.setIcon(QMessageBox.Warning)

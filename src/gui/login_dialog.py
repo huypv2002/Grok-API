@@ -2,15 +2,30 @@
 import json
 import math
 import random
+import hashlib
+import platform
+import uuid
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QApplication
 )
 from PySide6.QtCore import Qt, QTimer, QPointF, QThread, Signal
 from PySide6.QtGui import QFont, QPainter, QLinearGradient, QRadialGradient, QColor, QPen
 
 LOGIN_TEMP_FILE = Path("data/login_temp.json")
 AUTH_API_URL = "https://grok-auth-api.kh431248.workers.dev/login"
+
+
+def get_machine_id() -> str:
+    """Tạo machine ID từ thông tin phần cứng. Cùng máy → cùng ID."""
+    raw = f"{platform.node()}|{platform.machine()}|{platform.processor()}"
+    # Thêm MAC address nếu có
+    try:
+        mac = uuid.getnode()
+        raw += f"|{mac}"
+    except Exception:
+        pass
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 class AuthWorker(QThread):
@@ -21,13 +36,15 @@ class AuthWorker(QThread):
         super().__init__()
         self.username = username
         self.password = password
+        self.machine_id = get_machine_id()
 
     def run(self):
         import httpx
         try:
             r = httpx.post(AUTH_API_URL, json={
                 "username": self.username,
-                "password": self.password
+                "password": self.password,
+                "machine_id": self.machine_id
             }, timeout=10)
             data = r.json()
             if data.get("ok"):
@@ -239,6 +256,32 @@ class AppLoginDialog(QDialog):
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #e74c3c; background: transparent; font-size: 11px;")
         layout.addWidget(self.error_label)
+
+        # Machine ID — hiện cho user copy gửi admin
+        layout.addSpacing(8)
+        mid = get_machine_id()
+        mid_row = QHBoxLayout()
+        mid_label = QLabel(f"🖥️ Mã máy: {mid[:16]}...")
+        mid_label.setFont(QFont("Consolas", 9))
+        mid_label.setStyleSheet("color: rgba(255,255,255,0.35); background: transparent;")
+        copy_btn = QPushButton("📋 Copy")
+        copy_btn.setFixedSize(60, 24)
+        copy_btn.setCursor(Qt.PointingHandCursor)
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(40, 50, 70, 180); color: rgba(255,255,255,0.6);
+                border: 1px solid rgba(100,150,255,40); border-radius: 4px; font-size: 10px;
+            }
+            QPushButton:hover { color: white; }
+        """)
+        copy_btn.clicked.connect(lambda: (
+            QApplication.clipboard().setText(mid),
+            self.error_label.setStyleSheet("color: #2ecc71; background: transparent; font-size: 11px;"),
+            self.error_label.setText("✅ Đã copy mã máy!"),
+        ))
+        mid_row.addWidget(mid_label)
+        mid_row.addWidget(copy_btn)
+        layout.addLayout(mid_row)
 
         layout.addStretch()
 
