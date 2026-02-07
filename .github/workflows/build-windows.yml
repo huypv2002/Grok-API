@@ -52,7 +52,7 @@ jobs:
           python -m nuitka `
             --standalone `
             --onefile `
-            --windows-console-mode=disable `
+            --windows-console-mode=attach `
             --output-filename=GrokVideoGenerator.exe `
             --enable-plugin=pyside6 `
             --enable-plugin=anti-bloat `
@@ -64,11 +64,17 @@ jobs:
             --include-package=httpcore `
             --include-package=certifi `
             --include-package=anyio `
+            --include-package=anyio._backends `
             --include-package=sniffio `
             --include-package=h11 `
             --include-package=requests `
             --include-package=pydantic `
+            --include-package=pydantic.deprecated `
             --include-package=cryptography `
+            --include-package=cryptography.fernet `
+            --include-package=cryptography.hazmat `
+            --include-package=cryptography.hazmat.primitives `
+            --include-package=cryptography.hazmat.backends `
             --include-package=selenium `
             --include-package=selenium.webdriver `
             --include-package=undetected_chromedriver `
@@ -76,6 +82,13 @@ jobs:
             --include-package=zendriver.core `
             --include-package=zendriver.cdp `
             --include-package=websockets `
+            --include-module=hashlib `
+            --include-module=platform `
+            --include-module=uuid `
+            --include-module=sqlite3 `
+            --include-module=json `
+            --include-module=logging `
+            --include-module=traceback `
             --include-package-data=PySide6 `
             --include-package-data=requests `
             --include-package-data=cryptography `
@@ -83,7 +96,6 @@ jobs:
             --include-package-data=certifi `
             --include-package-data=httpx `
             --include-package-data=zendriver `
-            --include-data-dir=src=src `
             --nofollow-import-to=tkinter `
             --nofollow-import-to=_tkinter `
             --nofollow-import-to=tkinter.* `
