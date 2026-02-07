@@ -34,12 +34,77 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip wheel setuptools
-          pip install PySide6 httpx httpcore certifi anyio sniffio h11 idna
+
+          # === GUI framework ===
+          pip install PySide6
+
+          # === HTTP / networking ===
+          pip install httpx httpcore certifi anyio sniffio h11 idna
           pip install requests urllib3 charset-normalizer
+
+          # === Crypto ===
           pip install cryptography cffi pycparser
-          pip install pydantic selenium undetected-chromedriver
+
+          # === Data ===
+          pip install pydantic
+
+          # === Browser automation (selenium/uc) ===
+          pip install selenium undetected-chromedriver chromedriver-autoinstaller
+
+          # === Browser automation (zendriver + deps) ===
           pip install zendriver websockets emoji
+
+          # === CF solver deps ===
+          pip install latest-user-agents user-agents
+
+          # === Python 3.13 compat: distutils removed from stdlib ===
+          pip install setuptools
+
+          # === Build tool ===
           pip install nuitka ordered-set zstandard
+      
+      - name: Verify all imports
+        run: |
+          python -c "
+          import sys
+          print(f'Python {sys.version}')
+          errors = []
+          modules = [
+              # GUI
+              'PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui',
+              # HTTP
+              'httpx', 'httpcore', 'certifi', 'anyio', 'sniffio', 'h11', 'idna',
+              'requests', 'urllib3', 'charset_normalizer',
+              # Crypto
+              'cryptography', 'cryptography.fernet', 'cffi', '_cffi_backend',
+              # Data
+              'pydantic',
+              # Selenium/UC
+              'selenium', 'selenium.webdriver', 'undetected_chromedriver',
+              # Zendriver
+              'zendriver', 'websockets', 'emoji',
+              # CF solver deps
+              'latest_user_agents', 'user_agents',
+              # Stdlib critical
+              'sqlite3', 'ctypes', 'asyncio', 'hashlib', 'uuid', 'json',
+              'dataclasses', 'pathlib', 'logging', 'subprocess', 'glob',
+              # Python 3.13 compat
+              'setuptools', 'setuptools._distutils',
+          ]
+          for mod in modules:
+              try:
+                  __import__(mod)
+                  print(f'  OK: {mod}')
+              except ImportError as e:
+                  print(f'  FAIL: {mod} -> {e}')
+                  errors.append(f'{mod}: {e}')
+          if errors:
+              print(f'\n=== {len(errors)} MISSING MODULES ===')
+              for e in errors:
+                  print(f'  {e}')
+              sys.exit(1)
+          print(f'\nAll {len(modules)} modules OK!')
+          "
       
       - name: Build with Nuitka
         run: |
@@ -58,6 +123,9 @@ jobs:
             --include-package=httpcore `
             --include-package=anyio `
             --include-package=anyio._backends `
+            --include-package=requests `
+            --include-package=urllib3 `
+            --include-package=charset_normalizer `
             --include-package=pydantic `
             --include-package=cryptography `
             --include-package=cryptography.hazmat `
@@ -66,11 +134,17 @@ jobs:
             --include-package=selenium `
             --include-package=selenium.webdriver `
             --include-package=undetected_chromedriver `
+            --include-package=chromedriver_autoinstaller `
+            --include-package=setuptools `
+            --include-package=setuptools._distutils `
+            --include-package=setuptools._distutils.version `
             --include-package=zendriver `
             --include-package=zendriver.core `
             --include-package=zendriver.cdp `
             --include-package=websockets `
             --include-package=emoji `
+            --include-package=latest_user_agents `
+            --include-package=user_agents `
             --include-module=_cffi_backend `
             --include-module=sqlite3 `
             --include-module=ctypes `
@@ -82,6 +156,10 @@ jobs:
             --include-package-data=emoji `
             --include-package-data=selenium `
             --include-package-data=undetected_chromedriver `
+            --include-package-data=setuptools `
+            --include-package-data=latest_user_agents `
+            --include-package-data=user_agents `
+            --include-package-data=chromedriver_autoinstaller `
             --nofollow-import-to=tkinter `
             --nofollow-import-to=_tkinter `
             --nofollow-import-to=PyQt6 `
