@@ -19,33 +19,27 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Set up Python
+      - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
+      
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-win-py313-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-win-py313-
       
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip wheel setuptools
-          
-          # Install PySide6 first
-          pip install PySide6==6.6.0
-          
-          # Install main dependencies
-          pip install httpx httpcore certifi anyio sniffio h11
-          pip install requests pydantic cryptography
-          pip install selenium undetected-chromedriver
-          pip install zendriver
-          
-          # Install Nuitka
+          pip install --upgrade pip wheel setuptools
+          pip install PySide6 httpx httpcore certifi anyio sniffio h11 idna
+          pip install requests urllib3 charset-normalizer
+          pip install cryptography cffi pycparser
+          pip install pydantic selenium undetected-chromedriver
+          pip install zendriver websockets emoji
           pip install nuitka ordered-set zstandard
-          
-          # Verify installations
-          python -c "import PySide6; print('PySide6:', PySide6.__version__)"
-          python -c "import httpx; print('httpx OK')"
-          python -c "import cryptography; print('cryptography OK')"
-          python -c "import selenium; print('selenium OK')"
-          python -c "import zendriver; print('zendriver OK')"
       
       - name: Build with Nuitka
         run: |
@@ -55,23 +49,17 @@ jobs:
             --windows-console-mode=attach `
             --output-filename=GrokVideoGenerator.exe `
             --enable-plugin=pyside6 `
-            --enable-plugin=anti-bloat `
+            --jobs=4 `
             --include-package=src `
             --include-package=src.core `
             --include-package=src.gui `
             --include-package=src.utils `
             --include-package=httpx `
             --include-package=httpcore `
-            --include-package=certifi `
             --include-package=anyio `
             --include-package=anyio._backends `
-            --include-package=sniffio `
-            --include-package=h11 `
-            --include-package=requests `
             --include-package=pydantic `
-            --include-package=pydantic.deprecated `
             --include-package=cryptography `
-            --include-package=cryptography.fernet `
             --include-package=cryptography.hazmat `
             --include-package=cryptography.hazmat.primitives `
             --include-package=cryptography.hazmat.backends `
@@ -82,26 +70,22 @@ jobs:
             --include-package=zendriver.core `
             --include-package=zendriver.cdp `
             --include-package=websockets `
-            --include-module=hashlib `
-            --include-module=platform `
-            --include-module=uuid `
+            --include-package=emoji `
+            --include-module=_cffi_backend `
             --include-module=sqlite3 `
-            --include-module=json `
-            --include-module=logging `
-            --include-module=traceback `
+            --include-module=ctypes `
             --include-package-data=PySide6 `
-            --include-package-data=requests `
+            --include-package-data=certifi `
             --include-package-data=cryptography `
             --include-package-data=pydantic `
-            --include-package-data=certifi `
-            --include-package-data=httpx `
             --include-package-data=zendriver `
+            --include-package-data=emoji `
+            --include-package-data=selenium `
+            --include-package-data=undetected_chromedriver `
             --nofollow-import-to=tkinter `
             --nofollow-import-to=_tkinter `
-            --nofollow-import-to=tkinter.* `
             --nofollow-import-to=PyQt6 `
             --nofollow-import-to=PyQt5 `
-            --nofollow-import-to=PyQt4 `
             --nofollow-import-to=PySide2 `
             --nofollow-import-to=matplotlib `
             --nofollow-import-to=numpy `
@@ -111,9 +95,11 @@ jobs:
             --nofollow-import-to=jupyter `
             --nofollow-import-to=wx `
             --nofollow-import-to=kivy `
+            --nofollow-import-to=test `
+            --nofollow-import-to=unittest `
+            --nofollow-import-to=doctest `
             --no-pyi-file `
             --assume-yes-for-downloads `
-            --show-progress `
             main.py
       
       - name: Verify output
