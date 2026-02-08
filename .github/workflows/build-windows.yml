@@ -52,7 +52,7 @@ jobs:
           pip install selenium undetected-chromedriver chromedriver-autoinstaller
 
           # === Browser automation (zendriver + deps) ===
-          pip install zendriver websockets emoji
+          pip install zendriver websockets emoji grapheme
 
           # === CF solver deps ===
           pip install latest-user-agents user-agents
@@ -82,7 +82,7 @@ jobs:
               # Selenium/UC
               'selenium', 'selenium.webdriver', 'undetected_chromedriver',
               # Zendriver
-              'zendriver', 'websockets', 'emoji',
+              'zendriver', 'websockets', 'emoji', 'grapheme',
               # CF solver deps
               'latest_user_agents', 'user_agents',
               # Stdlib critical
@@ -106,8 +106,26 @@ jobs:
           print(f'\nAll {len(modules)} modules OK!')
           "
       
+      - name: Find package data paths
+        id: pkg_paths
+        run: |
+          $grapheme_dir = python -c "import grapheme, os; print(os.path.dirname(grapheme.__file__))"
+          echo "GRAPHEME_DIR=$grapheme_dir" >> $env:GITHUB_OUTPUT
+          echo "grapheme dir: $grapheme_dir"
+          # Verify data files exist
+          $data_dir = Join-Path $grapheme_dir "data"
+          if (Test-Path $data_dir) {
+            echo "grapheme data dir exists: $data_dir"
+            Get-ChildItem $data_dir
+          } else {
+            echo "WARNING: grapheme data dir NOT found at $data_dir"
+            # Try to find it
+            Get-ChildItem -Path $grapheme_dir -Recurse -Filter "*.json" | ForEach-Object { echo $_.FullName }
+          }
+      
       - name: Build with Nuitka
         run: |
+          $grapheme_dir = "${{ steps.pkg_paths.outputs.GRAPHEME_DIR }}"
           python -m nuitka `
             --standalone `
             --onefile `
@@ -143,6 +161,7 @@ jobs:
             --include-package=zendriver.cdp `
             --include-package=websockets `
             --include-package=emoji `
+            --include-package=grapheme `
             --include-package=latest_user_agents `
             --include-package=user_agents `
             --include-module=_cffi_backend `
@@ -154,6 +173,8 @@ jobs:
             --include-package-data=pydantic `
             --include-package-data=zendriver `
             --include-package-data=emoji `
+            --include-package-data=grapheme `
+            --include-data-dir="$grapheme_dir/data=grapheme/data" `
             --include-package-data=selenium `
             --include-package-data=undetected_chromedriver `
             --include-package-data=setuptools `

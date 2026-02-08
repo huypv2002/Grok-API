@@ -4,3 +4,12 @@ cryptography>=41.0.0
 pydantic>=2.0.0
 undetected-chromedriver>=3.5.0
 selenium>=4.15.0
+zendriver
+websockets
+emoji
+grapheme
+latest-user-agents
+user-agents
+chromedriver-autoinstaller
+requests
+setuptools
