@@ -69,7 +69,12 @@ class SessionManager:
 
     def _verify_login_success(self, controller: BrowserController, on_status: Callable = None, timeout: int = LOGIN_VERIFY_TIMEOUT) -> bool:
         """Sau khi click Login, chờ và verify đã vào được grok.com.
-        Không tự đóng browser — chỉ return True/False."""
+        Không tự đóng browser — chỉ return True/False.
+        
+        Redirect chain thường là:
+          accounts.x.ai/sign-in → accounts.x.ai/account → grok.com
+        Nên accounts.x.ai/account là trang trung gian OK, KHÔNG phải lỗi.
+        """
         start = time.time()
         last_url = ""
 
@@ -98,31 +103,55 @@ class SessionManager:
                     time.sleep(3)
                     continue
 
-                # Thành công: đã vào grok.com (không phải trang login)
-                is_on_grok = (
-                    'grok.com' in current_url
-                    and 'accounts.x.ai' not in current_url
-                    and '/sign-in' not in current_url
-                )
-
                 has_sso = 'sso' in cookies or 'sso-rw' in cookies
 
-                if is_on_grok and has_sso:
+                # Thành công: đã vào grok.com
+                if 'grok.com' in current_url and 'accounts.x.ai' not in current_url:
                     if on_status:
                         on_status(f"✅ Đã vào grok.com thành công! ({elapsed}s)")
                     return True
 
-                # Vẫn ở trang login → có thể sai password hoặc đang redirect
-                if 'accounts.x.ai' in current_url or '/sign-in' in current_url:
-                    # Check nếu có thông báo lỗi
-                    error_texts = ['Invalid', 'incorrect', 'wrong', 'Sai', 'không đúng']
-                    for err in error_texts:
-                        if err.lower() in page_source.lower():
+                # accounts.x.ai/account = trang trung gian sau login OK → chờ redirect tiếp
+                if 'accounts.x.ai/account' in current_url:
+                    if has_sso:
+                        if on_status:
+                            on_status(f"✅ Login OK (đang ở accounts.x.ai/account), có cookie sso. Chờ redirect... ({elapsed}s)")
+                        # Navigate thẳng đến grok.com thay vì chờ redirect
+                        if elapsed > 10:
                             if on_status:
-                                on_status(f"❌ Sai email/password")
-                            return False
+                                on_status("🔗 Redirect chậm, navigate thẳng đến grok.com...")
+                            try:
+                                controller.navigate_to("https://grok.com", wait_time=5)
+                            except Exception:
+                                pass
+                    else:
+                        if on_status:
+                            on_status(f"⏳ Đang ở accounts.x.ai/account, chờ cookies... ({elapsed}s)")
+                    time.sleep(2)
+                    continue
 
-                if elapsed % 10 == 0 and on_status:
+                # Vẫn ở trang sign-in → check lỗi sai password
+                # CHỈ check lỗi khi URL chứa /sign-in (trang login thực sự)
+                if '/sign-in' in current_url:
+                    # Chờ ít nhất 5s trước khi kết luận sai password
+                    # (tránh false positive khi trang đang load)
+                    if elapsed > 5:
+                        error_indicators = controller.find_elements('[role="alert"]')
+                        if error_indicators:
+                            if on_status:
+                                on_status("❌ Sai email/password (có thông báo lỗi)")
+                            return False
+                        # Check text lỗi cụ thể trong page
+                        error_texts = ['invalid credentials', 'incorrect password', 'wrong password',
+                                       'authentication failed', 'login failed']
+                        page_lower = page_source.lower()
+                        for err in error_texts:
+                            if err in page_lower:
+                                if on_status:
+                                    on_status(f"❌ Sai email/password")
+                                return False
+
+                if elapsed % 10 == 0 and elapsed > 0 and on_status:
                     on_status(f"⏳ Đang chờ redirect... ({elapsed}s)")
 
                 time.sleep(2)
