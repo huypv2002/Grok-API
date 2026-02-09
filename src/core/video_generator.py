@@ -759,7 +759,10 @@ class MultiTabVideoGenerator:
             self.on_status(self.account.email, full_msg)
     
     async def start(self) -> bool:
-        """Start browser and create tabs"""
+        """Start browser and create tabs.
+        
+        Dùng CloudflareSolver config + stealth patches cho Windows headless.
+        """
         if not ZENDRIVER_AVAILABLE:
             self._log("❌ zendriver not installed")
             return False
@@ -767,34 +770,47 @@ class MultiTabVideoGenerator:
         try:
             self._log("🚀 Starting browser...")
             
-            # Create browser config
+            # Dùng CloudflareSolver để tạo browser config có anti-detection
             user_agent = get_chrome_user_agent()
-            self.config = zendriver.Config(headless=self.headless)
-            self.config.add_argument(f"--user-agent={user_agent}")
-            self.config.add_argument("--mute-audio")  # Mute all audio
+            self._solver_helper = CloudflareSolver(
+                user_agent=user_agent,
+                timeout=90,
+                headless=self.headless,
+            )
+            self.browser = self._solver_helper.driver
+            self.config = self.browser.config if hasattr(self.browser, 'config') else None
             
-            # Start browser
-            self.browser = zendriver.Browser(self.config)
+            # Start browser + inject stealth patches
             await self.browser.start()
+            await self._solver_helper._inject_stealth_patches()
             
             # Verify browser started correctly
             if not self.browser.main_tab:
                 self._log("❌ Browser started but main_tab is None, retrying...")
                 await asyncio.sleep(2)
-                # Retry once
                 try:
                     await self.browser.stop()
                 except:
                     pass
-                self.browser = zendriver.Browser(self.config)
+                # Retry with fresh solver
+                self._solver_helper = CloudflareSolver(
+                    user_agent=user_agent,
+                    timeout=90,
+                    headless=self.headless,
+                )
+                self.browser = self._solver_helper.driver
                 await self.browser.start()
+                await self._solver_helper._inject_stealth_patches()
                 await asyncio.sleep(1)
                 if not self.browser.main_tab:
                     self._log("❌ main_tab still None after retry")
                     return False
             
             # Save user_data_dir for later use in downloads
-            self._user_data_dir = self.config.user_data_dir
+            try:
+                self._user_data_dir = self._solver_helper.driver.config.user_data_dir
+            except:
+                self._user_data_dir = None
             self._log(f"   Browser profile: {self._user_data_dir}")
             
             # Step 1: Inject cookies to main_tab first
@@ -877,7 +893,8 @@ class MultiTabVideoGenerator:
     
     async def _handle_cloudflare_on_tab(self, tab) -> bool:
         """Handle Cloudflare challenge on a specific tab.
-        Retry click turnstile nhiều lần thay vì chỉ 1 lần."""
+        Retry click turnstile nhiều lần thay vì chỉ 1 lần.
+        Dùng CloudflareSolver.set_user_agent_metadata cho UA metadata chính xác."""
         try:
             html = await tab.get_content()
             cf_indicators = ['Just a moment', 'Checking your browser', 'challenge-platform', 'cf-turnstile']
@@ -888,37 +905,11 @@ class MultiTabVideoGenerator:
             
             self._log("🔐 Cloudflare detected, solving...")
             
-            # Set user agent metadata
+            # Set user agent metadata — dùng helper từ CloudflareSolver
             user_agent = get_chrome_user_agent()
             try:
-                from zendriver.cdp.emulation import UserAgentBrandVersion, UserAgentMetadata
-                import user_agents
-                
-                device = user_agents.parse(user_agent)
-                metadata = UserAgentMetadata(
-                    architecture="x86",
-                    bitness="64",
-                    brands=[
-                        UserAgentBrandVersion(brand="Not)A;Brand", version="8"),
-                        UserAgentBrandVersion(brand="Chromium", version=str(device.browser.version[0])),
-                        UserAgentBrandVersion(brand="Google Chrome", version=str(device.browser.version[0])),
-                    ],
-                    full_version_list=[
-                        UserAgentBrandVersion(brand="Not)A;Brand", version="8"),
-                        UserAgentBrandVersion(brand="Chromium", version=str(device.browser.version[0])),
-                        UserAgentBrandVersion(brand="Google Chrome", version=str(device.browser.version[0])),
-                    ],
-                    mobile=device.is_mobile,
-                    model=device.device.model or "",
-                    platform=device.os.family,
-                    platform_version=device.os.version_string,
-                    full_version=device.browser.version_string,
-                    wow64=False,
-                )
-                tab.feed_cdp(
-                    cdp.network.set_user_agent_override(user_agent, user_agent_metadata=metadata)
-                )
-                self._log("   Set user agent metadata")
+                await self._solver_helper.set_user_agent_metadata(user_agent)
+                self._log("   Set user agent metadata (platform-aware)")
             except Exception as e:
                 self._log(f"   ⚠️ UA metadata error: {e}")
             
@@ -945,7 +936,7 @@ class MultiTabVideoGenerator:
                         self._log("✅ Cloudflare passed!")
                         return True
                 
-                # Thử click turnstile mỗi 10s
+                # Thử click turnstile mỗi 10s — dùng CDP mouse events cho Windows
                 import time as _time
                 now = _time.time()
                 if now - last_click_time >= 10:
@@ -971,9 +962,32 @@ class MultiTabVideoGenerator:
                                 await asyncio.sleep(1)
                                 try:
                                     await challenge.get_position()
-                                    await challenge.mouse_click()
+                                    # CDP mouse click — đáng tin cậy hơn trên Windows headless
+                                    pos = challenge.position
+                                    if pos and hasattr(pos, 'x') and hasattr(pos, 'y'):
+                                        x = pos.x + (pos.width / 2 if hasattr(pos, 'width') else 10)
+                                        y = pos.y + (pos.height / 2 if hasattr(pos, 'height') else 10)
+                                        await tab.send(cdp.input_.dispatch_mouse_event(
+                                            type_="mouseMoved", x=x, y=y,
+                                        ))
+                                        await asyncio.sleep(0.05)
+                                        await tab.send(cdp.input_.dispatch_mouse_event(
+                                            type_="mousePressed", x=x, y=y,
+                                            button=cdp.input_.MouseButton.LEFT, click_count=1,
+                                        ))
+                                        await asyncio.sleep(0.05)
+                                        await tab.send(cdp.input_.dispatch_mouse_event(
+                                            type_="mouseReleased", x=x, y=y,
+                                            button=cdp.input_.MouseButton.LEFT, click_count=1,
+                                        ))
+                                    else:
+                                        await challenge.mouse_click()
                                 except Exception as e:
                                     self._log(f"   ⚠️ Click error: {e}")
+                                    try:
+                                        await challenge.mouse_click()
+                                    except:
+                                        pass
                     except Exception as e:
                         if i == 0:
                             self._log(f"   ⚠️ Turnstile error: {e}")

@@ -1,0 +1,48 @@
+[
+  {
+    "url": "https://grok.com/rest/app-chat/conversations/new",
+    "headers": {
+      "sec-ch-ua-full-version-list": "",
+      "sec-ch-ua-platform": "\"macOS\"",
+      "sec-ch-ua": "\"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"144\", \"Google Chrome\";v=\"144\"",
+      "sec-ch-ua-bitness": "\"\"",
+      "sec-ch-ua-model": "\"\"",
+      "sec-ch-ua-mobile": "?0",
+      "baggage": "sentry-environment=production,sentry-release=c21c980d5edded2f6c7ef4e10c3655ed959e59c5,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c,sentry-trace_id=b4c9ef652cbfc76a2d11496a1ab31036,sentry-org_id=4508179396558848,sentry-sampled=false,sentry-sample_rand=0.757067795110653,sentry-sample_rate=0",
+      "sentry-trace": "b4c9ef652cbfc76a2d11496a1ab31036-8132c8058bbbaf0b-0",
+      "traceparent": "00-683fb589b7882ce74250aab53ddb3941-372a77c7b211ec13-00",
+      "sec-ch-ua-arch": "\"\"",
+      "sec-ch-ua-full-version": "\"\"",
+      "Content-Type": "application/json",
+      "x-xai-request-id": "0fee3cdc-b9c3-44b8-90e2-f88e6d58be9c",
+      "Referer": "https://grok.com/imagine/post/3cc99319-d74e-441a-85c3-05e7e8db8752",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+      "x-statsig-id": "sjYx/fDnEiU2vbbemPW1mEZPH10wa5mE4psceZ47q4b/WRwcWWSqLfsLi9YqVkltPDuHiLeepgUAPl2/i9zqT26PQKylsQ",
+      "sec-ch-ua-platform-version": "\"\""
+    },
+    "post_data": "{\"temporary\":true,\"modelName\":\"grok-3\",\"message\":\"meo meo --mode=custom\",\"toolOverrides\":{\"videoGen\":true},\"enableSideBySide\":true,\"responseMetadata\":{\"experiments\":[],\"modelConfigOverride\":{\"modelMap\":{\"videoGenModelConfig\":{\"parentPostId\":\"3cc99319-d74e-441a-85c3-05e7e8db8752\",\"aspectRatio\":\"2:3\",\"videoLength\":6,\"isVideoEdit\":false,\"resolutionName\":\"480p\"}}}}}"
+  },
+  {
+    "url": "https://grok.com/rest/app-chat/conversations/new",
+    "headers": {
+      "sec-ch-ua-full-version-list": "",
+      "sec-ch-ua-platform": "\"macOS\"",
+      "sec-ch-ua": "\"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"144\", \"Google Chrome\";v=\"144\"",
+      "sec-ch-ua-bitness": "\"\"",
+      "sec-ch-ua-model": "\"\"",
+      "sec-ch-ua-mobile": "?0",
+      "baggage": "sentry-environment=production,sentry-release=c21c980d5edded2f6c7ef4e10c3655ed959e59c5,sentry-public_key=b311e0f2690c81f25e2c4cf6d4f7ce1c,sentry-trace_id=b4c9ef652cbfc76a2d11496a1ab31036,sentry-org_id=4508179396558848,sentry-sampled=false,sentry-sample_rand=0.757067795110653,sentry-sample_rate=0",
+      "sentry-trace": "b4c9ef652cbfc76a2d11496a1ab31036-abf020277e1dc606-0",
+      "traceparent": "00-655759e58982b633e18548e00cfa49ad-0cfb347987c2f73c-00",
+      "sec-ch-ua-arch": "\"\"",
+      "sec-ch-ua-full-version": "\"\"",
+      "Content-Type": "application/json",
+      "x-xai-request-id": "5841aec1-a371-40a2-9d85-aca9a598c248",
+      "Referer": "https://grok.com/imagine/post/3cc99319-d74e-441a-85c3-05e7e8db8752",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+      "x-statsig-id": "qCwr5+r9CD8sp6zEgu+vglxVBUcqcYOe+IEGY4QhsZzlQwYGQ36wN+ERkcwwTFN3JiWdkq2UBNsAbVX5PMh/T5qsXTm7qw",
+      "sec-ch-ua-platform-version": "\"\""
+    },
+    "post_data": "{\"temporary\":true,\"modelName\":\"grok-3\",\"message\":\"meo meo --mode=custom\",\"toolOverrides\":{\"videoGen\":true},\"enableSideBySide\":true,\"responseMetadata\":{\"experiments\":[],\"modelConfigOverride\":{\"modelMap\":{\"videoGenModelConfig\":{\"parentPostId\":\"3cc99319-d74e-441a-85c3-05e7e8db8752\",\"aspectRatio\":\"2:3\",\"videoLength\":6,\"isVideoEdit\":false,\"resolutionName\":\"480p\"}}}}}"
+  }
+]
