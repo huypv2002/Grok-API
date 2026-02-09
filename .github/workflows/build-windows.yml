@@ -14,71 +14,29 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 60
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+      
       - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-
-      # ── Cache 1: pip packages (download cache) ──
-      - name: Cache pip
+      
+      - name: Cache pip packages
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
           key: pip-win-py313-${{ hashFiles('requirements.txt') }}
           restore-keys: pip-win-py313-
-
-      # ── Cache 2: Nuitka compilation cache (BIGGEST win) ──
-      # Nuitka uses ccache internally — caching this dir skips recompiling
-      # unchanged C files, saving 50-70% of build time on repeat builds.
-      - name: Cache Nuitka ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}\nuitka-cache
-          key: nuitka-cache-win-py313-${{ hashFiles('main.py', 'src/**/*.py') }}
-          restore-keys: |
-            nuitka-cache-win-py313-
-
-      # ── Cache 3: Nuitka downloads (MinGW64 C compiler, ~400MB) ──
-      # Nuitka auto-downloads MinGW64 on Windows if no MSVC found.
-      # Caching this avoids re-downloading every build.
-      - name: Cache Nuitka AppData (MinGW64 + tools)
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Local\Nuitka
-          key: nuitka-appdata-win-v2
-          restore-keys: nuitka-appdata-win-
-
-      # ── Cache 4: Installed Python packages (site-packages) ──
-      # Avoids re-installing all wheels when requirements.txt hasn't changed.
-      - name: Get Python site-packages path
-        id: site_pkg
-        run: |
-          $sp = (python -c "import site; print(site.getsitepackages()[0])").Trim()
-          echo "SITE_PACKAGES=$sp" >> $env:GITHUB_OUTPUT
-          echo "site-packages: $sp"
-
-      - name: Cache site-packages
-        id: cache_site
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.site_pkg.outputs.SITE_PACKAGES }}
-          key: site-pkg-win-py313-${{ hashFiles('requirements.txt') }}-v2
-          restore-keys: site-pkg-win-py313-
-
+      
       - name: Install dependencies
         run: |
           pip install --upgrade pip wheel setuptools
-
-          # Only full install if cache miss
           pip install -r requirements.txt
 
-          # Sub-dependencies needed for Nuitka bundling
+          # Sub-dependencies (not in requirements.txt but needed for Nuitka to bundle)
           pip install httpcore certifi anyio sniffio h11 idna
           pip install urllib3 charset-normalizer
           pip install cffi pycparser
@@ -86,38 +44,84 @@ jobs:
 
           # Build tools
           pip install nuitka ordered-set zstandard
-
+      
+      - name: Verify all imports
+        run: |
+          python -c "
+          import sys
+          print(f'Python {sys.version}')
+          errors = []
+          modules = [
+              'PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui',
+              'httpx', 'httpcore', 'certifi', 'anyio', 'sniffio', 'h11', 'idna',
+              'requests', 'urllib3', 'charset_normalizer',
+              'cryptography', 'cryptography.fernet', 'cffi', '_cffi_backend',
+              'pydantic',
+              'selenium', 'selenium.webdriver', 'undetected_chromedriver',
+              'zendriver', 'websockets', 'emoji', 'grapheme',
+              'latest_user_agents', 'user_agents',
+              'sqlite3', 'ctypes', 'asyncio', 'hashlib', 'uuid', 'json',
+              'dataclasses', 'pathlib', 'logging', 'subprocess', 'glob',
+              'setuptools', 'setuptools._distutils',
+          ]
+          for mod in modules:
+              try:
+                  __import__(mod)
+                  print(f'  OK: {mod}')
+              except ImportError as e:
+                  print(f'  FAIL: {mod} -> {e}')
+                  errors.append(f'{mod}: {e}')
+          if errors:
+              print(f'\n=== {len(errors)} MISSING MODULES ===')
+              for e in errors:
+                  print(f'  {e}')
+              sys.exit(1)
+          print(f'\nAll {len(modules)} modules OK!')
+          "
+      
       - name: Prepare package data paths
         id: pkg_paths
         run: |
+          # Get grapheme data dir (normalize to forward slashes for Nuitka)
           $raw = (python -c "import grapheme, os; print(os.path.dirname(grapheme.__file__))").Trim()
           $grapheme_dir = $raw -replace '\\', '/'
           echo "GRAPHEME_DIR=$grapheme_dir" >> $env:GITHUB_OUTPUT
+          echo "grapheme dir: $grapheme_dir"
 
+          # Verify data files exist
           $data_dir = Join-Path $raw "data"
-          if (-not (Test-Path $data_dir)) {
-            echo "ERROR: grapheme/data NOT found"
+          if (Test-Path $data_dir) {
+            echo "OK: grapheme/data found"
+            Get-ChildItem $data_dir
+          } else {
+            echo "ERROR: grapheme/data NOT found at $data_dir"
             exit 1
           }
-          echo "OK: grapheme/data found"
 
+          # Get emoji data dir
+          $emoji_raw = (python -c "import emoji, os; print(os.path.dirname(emoji.__file__))").Trim()
+          $emoji_dir = $emoji_raw -replace '\\', '/'
+          echo "EMOJI_DIR=$emoji_dir" >> $env:GITHUB_OUTPUT
+          echo "emoji dir: $emoji_dir"
+
+          # Get certifi CA bundle dir
+          $certifi_raw = (python -c "import certifi, os; print(os.path.dirname(certifi.__file__))").Trim()
+          $certifi_dir = $certifi_raw -replace '\\', '/'
+          echo "CERTIFI_DIR=$certifi_dir" >> $env:GITHUB_OUTPUT
+          echo "certifi dir: $certifi_dir"
+
+          # Get CPU count
           $cpu = $env:NUMBER_OF_PROCESSORS
           if (-not $cpu) { $cpu = "4" }
           echo "CPU_COUNT=$cpu" >> $env:GITHUB_OUTPUT
           echo "CPU cores: $cpu"
-
+      
       - name: Build with Nuitka
-        env:
-          NUITKA_CACHE_DIR: ${{ runner.temp }}\nuitka-cache
         run: |
           $grapheme_dir = "${{ steps.pkg_paths.outputs.GRAPHEME_DIR }}"
           $cpu = "${{ steps.pkg_paths.outputs.CPU_COUNT }}"
-
-          # Create cache dir if not exists
-          New-Item -ItemType Directory -Force -Path $env:NUITKA_CACHE_DIR | Out-Null
-
-          echo "Building with $cpu jobs, cache=$env:NUITKA_CACHE_DIR"
-          echo "Start: $(Get-Date -Format 'HH:mm:ss')"
+          echo "Building with $cpu jobs..."
+          echo "grapheme_dir = $grapheme_dir"
 
           python -m nuitka `
             --standalone `
@@ -126,7 +130,6 @@ jobs:
             --output-filename=GrokVideoGenerator.exe `
             --enable-plugin=pyside6 `
             --jobs=$cpu `
-            --cache-dir="$env:NUITKA_CACHE_DIR" `
             --include-package=src `
             --include-package=src.core `
             --include-package=src.gui `
@@ -161,7 +164,6 @@ jobs:
             --include-module=_cffi_backend `
             --include-module=sqlite3 `
             --include-module=ctypes `
-            --include-module=winreg `
             --include-package-data=PySide6 `
             --include-package-data=certifi `
             --include-package-data=cryptography `
@@ -195,9 +197,7 @@ jobs:
             --no-pyi-file `
             --assume-yes-for-downloads `
             main.py
-
-          echo "End: $(Get-Date -Format 'HH:mm:ss')"
-
+      
       - name: Verify output
         run: |
           if (Test-Path "GrokVideoGenerator.exe") {
@@ -206,17 +206,18 @@ jobs:
             echo "Build successful! Size: ${sizeMB} MB"
           } else {
             echo "ERROR: GrokVideoGenerator.exe not found!"
+            # Search for it
             Get-ChildItem -Recurse -Filter "GrokVideoGenerator.exe" | ForEach-Object { echo $_.FullName }
             exit 1
           }
-
+      
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: GrokVideoGenerator-windows
           path: GrokVideoGenerator.exe
           retention-days: 30
-
+      
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
