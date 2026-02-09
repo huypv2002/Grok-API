@@ -7,16 +7,23 @@ from pathlib import Path
 from datetime import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QTextEdit, QComboBox, QPushButton, QMessageBox, QCheckBox, QSpinBox,
+    QTextEdit, QComboBox, QPushButton, QMessageBox, QCheckBox,
     QFileDialog, QLabel, QTableWidget, QTableWidgetItem, QLineEdit,
     QHeaderView, QSplitter, QFrame, QTabWidget, QProgressBar, QScrollArea,
     QButtonGroup, QRadioButton, QListWidget, QListWidgetItem
 )
 from PySide6.QtCore import Signal, QThread, Qt, QTimer, QTime, QSize
-from PySide6.QtGui import QColor, QFont, QPixmap, QIcon, QPixmap, QIcon
+from PySide6.QtGui import QColor, QFont, QPixmap, QIcon
+
 from ..core.account_manager import AccountManager
 from ..core.video_generator import VideoGenerator, MultiTabVideoGenerator, ZENDRIVER_AVAILABLE
 from ..core.history_manager import HistoryManager
+
+
+class NoScrollComboBox(QComboBox):
+    """ComboBox chỉ cho phép click chọn, không thay đổi giá trị khi scroll."""
+    def wheelEvent(self, event):
+        event.ignore()  # Bỏ qua scroll event
 from ..core.models import VideoSettings
 
 
@@ -473,37 +480,28 @@ class VideoGenTab(QWidget):
         form.setLabelAlignment(Qt.AlignRight)
         
         # Tỷ lệ khung hình (5 options from Grok UI)
-        self.aspect_combo = QComboBox()
+        self.aspect_combo = NoScrollComboBox()
         self.aspect_combo.addItems(["2:3", "3:2", "1:1", "9:16", "16:9"])
         self.aspect_combo.setCurrentIndex(4)  # default 16:9
         self.aspect_combo.setMinimumWidth(120)
         
         # Thời lượng video
-        self.length_combo = QComboBox()
+        self.length_combo = NoScrollComboBox()
         self.length_combo.addItems(["6 giây", "10 giây"])
         self.length_combo.setMinimumWidth(120)
         
         # Độ phân giải
-        self.resolution_combo = QComboBox()
+        self.resolution_combo = NoScrollComboBox()
         self.resolution_combo.addItems(["480p", "720p"])
         self.resolution_combo.setMinimumWidth(120)
-        
-        # Tabs per account
-        self.thread_spin = QSpinBox()
-        self.thread_spin.setRange(1, 3)
-        self.thread_spin.setValue(3)
-        self.thread_spin.setMinimumWidth(120)
-        self.thread_spin.setToolTip("Số tab mỗi tài khoản (1-3)")
         
         self.ratio_label = QLabel("Tỷ lệ:")
         self.length_label = QLabel("Thời lượng:")
         self.resolution_label = QLabel("Phân giải:")
-        self.thread_label = QLabel("Tab/TK:")
         
         form.addRow(self.ratio_label, self.aspect_combo)
         form.addRow(self.length_label, self.length_combo)
         form.addRow(self.resolution_label, self.resolution_combo)
-        form.addRow(self.thread_label, self.thread_spin)
         
         left_layout.addLayout(form)
         
@@ -652,14 +650,6 @@ class VideoGenTab(QWidget):
                     selection-background-color: rgb(80, 120, 200);
                     border: 1px solid rgba(80, 120, 200, 80);
                 }
-                QSpinBox {
-                    background: rgba(35, 45, 65, 220);
-                    color: white;
-                    border: 1px solid rgba(80, 120, 200, 80);
-                    border-radius: 6px;
-                    padding: 6px 10px;
-                    min-height: 20px;
-                }
             """
             table_style = """
                 QTableWidget {
@@ -744,14 +734,6 @@ class VideoGenTab(QWidget):
                     selection-background-color: rgb(80, 120, 200);
                     border: 1px solid rgba(100, 150, 200, 100);
                 }
-                QSpinBox {
-                    background: white;
-                    color: #333;
-                    border: 1px solid rgba(100, 150, 200, 100);
-                    border-radius: 6px;
-                    padding: 6px 10px;
-                    min-height: 20px;
-                }
             """
             table_style = """
                 QTableWidget {
@@ -809,7 +791,7 @@ class VideoGenTab(QWidget):
         
         # Apply styles
         for lbl in [self.prompt_title, self.settings_title, self.acc_title, self.log_title,
-                    self.ratio_label, self.length_label, self.resolution_label, self.thread_label,
+                    self.ratio_label, self.length_label, self.resolution_label,
                     self.output_title, self.batch_info]:
             lbl.setStyleSheet(f"color: {text_color}; background: transparent;")
         
@@ -817,7 +799,6 @@ class VideoGenTab(QWidget):
         self.aspect_combo.setStyleSheet(input_style)
         self.length_combo.setStyleSheet(input_style)
         self.resolution_combo.setStyleSheet(input_style)
-        self.thread_spin.setStyleSheet(input_style)
         for tbl in [self.acc_table, self.queue_table, self.run_table, self.done_table]:
             tbl.setStyleSheet(table_style)
         
@@ -1217,7 +1198,7 @@ class VideoGenTab(QWidget):
         self._start_time = QTime.currentTime()
         self._elapsed_timer.start(1000)
         
-        num_tabs = self.thread_spin.value()
+        num_tabs = 3  # Fixed: 3 tabs per account
         
         # Distribute items: chia block liên tục cho mỗi account, KHÔNG có gap
         # VD: 12 items, 3 accounts → acc0: [0,1,2,3], acc1: [4,5,6,7], acc2: [8,9,10,11]
@@ -1557,7 +1538,6 @@ class VideoGenTab(QWidget):
                 self.aspect_combo.setCurrentIndex(s.get("aspect", 4))
                 self.length_combo.setCurrentIndex(s.get("length", 0))
                 self.resolution_combo.setCurrentIndex(s.get("resolution", 0))
-                self.thread_spin.setValue(min(s.get("concurrent", 2), 3))
             except:
                 pass
         
@@ -1565,7 +1545,6 @@ class VideoGenTab(QWidget):
         self.aspect_combo.currentIndexChanged.connect(self._save_settings)
         self.length_combo.currentIndexChanged.connect(self._save_settings)
         self.resolution_combo.currentIndexChanged.connect(self._save_settings)
-        self.thread_spin.valueChanged.connect(self._save_settings)
     
     def _save_settings(self):
         """Save current settings to file"""
@@ -1575,7 +1554,6 @@ class VideoGenTab(QWidget):
                 "aspect": self.aspect_combo.currentIndex(),
                 "length": self.length_combo.currentIndex(),
                 "resolution": self.resolution_combo.currentIndex(),
-                "concurrent": self.thread_spin.value()
             }
             SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
         except Exception as e:

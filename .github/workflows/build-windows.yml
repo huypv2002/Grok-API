@@ -19,17 +19,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Set up Python 3.13
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.12'
       
       - name: Cache pip packages
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: pip-win-py313-${{ hashFiles('requirements.txt') }}
-          restore-keys: pip-win-py313-
+          key: pip-win-py312-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-win-py312-
       
       - name: Install dependencies
         run: |
@@ -62,6 +62,7 @@ jobs:
               'latest_user_agents', 'user_agents',
               'sqlite3', 'ctypes', 'asyncio', 'hashlib', 'uuid', 'json',
               'dataclasses', 'pathlib', 'logging', 'subprocess', 'glob',
+              'platform', 'math', 'random', 'base64', 're', 'os',
               'setuptools', 'setuptools._distutils',
           ]
           for mod in modules:
@@ -115,7 +116,7 @@ jobs:
           if (-not $cpu) { $cpu = "4" }
           echo "CPU_COUNT=$cpu" >> $env:GITHUB_OUTPUT
           echo "CPU cores: $cpu"
-      
+
       - name: Build with Nuitka
         run: |
           $grapheme_dir = "${{ steps.pkg_paths.outputs.GRAPHEME_DIR }}"
@@ -142,12 +143,15 @@ jobs:
             --include-package=urllib3 `
             --include-package=charset_normalizer `
             --include-package=pydantic `
+            --include-package=pydantic.deprecated `
             --include-package=cryptography `
             --include-package=cryptography.hazmat `
             --include-package=cryptography.hazmat.primitives `
             --include-package=cryptography.hazmat.backends `
             --include-package=selenium `
             --include-package=selenium.webdriver `
+            --include-package=selenium.webdriver.common `
+            --include-package=selenium.webdriver.chrome `
             --include-package=undetected_chromedriver `
             --include-package=chromedriver_autoinstaller `
             --include-package=setuptools `
@@ -157,6 +161,7 @@ jobs:
             --include-package=zendriver.core `
             --include-package=zendriver.cdp `
             --include-package=websockets `
+            --include-package=websockets.legacy `
             --include-package=emoji `
             --include-package=grapheme `
             --include-package=latest_user_agents `
@@ -164,6 +169,9 @@ jobs:
             --include-module=_cffi_backend `
             --include-module=sqlite3 `
             --include-module=ctypes `
+            --include-module=platform `
+            --include-module=hashlib `
+            --include-module=base64 `
             --include-package-data=PySide6 `
             --include-package-data=certifi `
             --include-package-data=cryptography `
@@ -194,6 +202,7 @@ jobs:
             --nofollow-import-to=test `
             --nofollow-import-to=unittest `
             --nofollow-import-to=doctest `
+            --nofollow-import-to=giaima `
             --no-pyi-file `
             --assume-yes-for-downloads `
             main.py
