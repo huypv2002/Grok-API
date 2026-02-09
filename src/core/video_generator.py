@@ -876,7 +876,8 @@ class MultiTabVideoGenerator:
         self.tab_ready = []
     
     async def _handle_cloudflare_on_tab(self, tab) -> bool:
-        """Handle Cloudflare challenge on a specific tab - same logic as VideoGenerator"""
+        """Handle Cloudflare challenge on a specific tab.
+        Retry click turnstile nhiều lần thay vì chỉ 1 lần."""
         try:
             html = await tab.get_content()
             cf_indicators = ['Just a moment', 'Checking your browser', 'challenge-platform', 'cf-turnstile']
@@ -887,7 +888,7 @@ class MultiTabVideoGenerator:
             
             self._log("🔐 Cloudflare detected, solving...")
             
-            # Set user agent metadata (important for headless)
+            # Set user agent metadata
             user_agent = get_chrome_user_agent()
             try:
                 from zendriver.cdp.emulation import UserAgentBrandVersion, UserAgentMetadata
@@ -932,42 +933,53 @@ class MultiTabVideoGenerator:
                 self._log(f"   Challenge type: {challenge_type}")
             
             # Try to solve interactive challenge (click turnstile)
-            try:
-                from zendriver.core.element import Element
-                
-                widget_input = await tab.find("input")
-                
-                if widget_input and widget_input.parent and widget_input.parent.shadow_roots:
-                    challenge = Element(
-                        widget_input.parent.shadow_roots[0],
-                        tab,
-                        widget_input.parent.tree,
-                    )
-                    challenge = challenge.children[0]
-                    
-                    if (
-                        isinstance(challenge, Element)
-                        and "display: none;" not in challenge.attrs.get("style", "")
-                    ):
-                        self._log("   Clicking turnstile...")
-                        await asyncio.sleep(1)
-                        try:
-                            await challenge.get_position()
-                            await challenge.mouse_click()
-                        except Exception as e:
-                            self._log(f"   ⚠️ Click error: {e}")
-            except Exception as e:
-                self._log(f"   ⚠️ Turnstile error: {e}")
+            # Retry click mỗi 10s thay vì chỉ 1 lần
+            last_click_time = 0
             
-            # Wait for cf_clearance cookie
-            for i in range(60):
+            # Wait for cf_clearance cookie — retry click turnstile mỗi 10s
+            for i in range(90):
+                # Check cookie trước
                 cookies = await self.browser.cookies.get_all()
                 for c in cookies:
                     if c.name == "cf_clearance":
                         self._log("✅ Cloudflare passed!")
                         return True
+                
+                # Thử click turnstile mỗi 10s
+                import time as _time
+                now = _time.time()
+                if now - last_click_time >= 10:
+                    last_click_time = now
+                    try:
+                        from zendriver.core.element import Element
+                        
+                        widget_input = await tab.find("input")
+                        
+                        if widget_input and widget_input.parent and widget_input.parent.shadow_roots:
+                            challenge = Element(
+                                widget_input.parent.shadow_roots[0],
+                                tab,
+                                widget_input.parent.tree,
+                            )
+                            challenge = challenge.children[0]
+                            
+                            if (
+                                isinstance(challenge, Element)
+                                and "display: none;" not in challenge.attrs.get("style", "")
+                            ):
+                                self._log(f"   Clicking turnstile... ({i}s)")
+                                await asyncio.sleep(1)
+                                try:
+                                    await challenge.get_position()
+                                    await challenge.mouse_click()
+                                except Exception as e:
+                                    self._log(f"   ⚠️ Click error: {e}")
+                    except Exception as e:
+                        if i == 0:
+                            self._log(f"   ⚠️ Turnstile error: {e}")
+                
                 await asyncio.sleep(1)
-                if i % 10 == 0:
+                if i % 10 == 0 and i > 0:
                     self._log(f"⏳ Waiting for cf_clearance... ({i}s)")
             
             self._log("❌ Cloudflare timeout")
