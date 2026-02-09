@@ -219,7 +219,20 @@ class SessionManager:
         return required.issubset(set(account.cookies.keys()))
     
     def get_headers(self, account: Account) -> dict:
-        """Generate headers for API requests"""
+        """Generate headers for API requests — uses fixed UA from cf_solver"""
+        from .cf_solver import get_chrome_user_agent
+        user_agent = get_chrome_user_agent()
+        
+        # Detect platform for sec-ch-ua-platform
+        import platform as _platform
+        sys_name = _platform.system()
+        if sys_name == "Windows":
+            ua_platform = '"Windows"'
+        elif sys_name == "Darwin":
+            ua_platform = '"macOS"'
+        else:
+            ua_platform = '"Linux"'
+        
         headers = {
             'accept': '*/*',
             'accept-language': 'vi-VN,vi;q=0.9',
@@ -228,11 +241,11 @@ class SessionManager:
             'referer': 'https://grok.com/imagine',
             'sec-ch-ua': '"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"',
             'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"macOS"',
+            'sec-ch-ua-platform': ua_platform,
             'sec-fetch-dest': 'empty',
             'sec-fetch-mode': 'cors',
             'sec-fetch-site': 'same-origin',
-            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+            'user-agent': user_agent,
             'x-xai-request-id': str(uuid4())
         }
         return headers

@@ -746,6 +746,7 @@ class MultiTabVideoGenerator:
         self.tab_ready: List[bool] = []  # Track which tabs are ready
         self._running = True
         self._user_data_dir: Optional[str] = None  # Browser profile directory
+        self._auto_video_disabled = False  # Track if auto-video setting was disabled (image mode)
     
     def _log(self, msg: str, tab_id: int = -1):
         """Log message with optional tab ID"""
@@ -776,13 +777,34 @@ class MultiTabVideoGenerator:
             self.browser = zendriver.Browser(self.config)
             await self.browser.start()
             
+            # Verify browser started correctly
+            if not self.browser.main_tab:
+                self._log("❌ Browser started but main_tab is None, retrying...")
+                await asyncio.sleep(2)
+                # Retry once
+                try:
+                    await self.browser.stop()
+                except:
+                    pass
+                self.browser = zendriver.Browser(self.config)
+                await self.browser.start()
+                await asyncio.sleep(1)
+                if not self.browser.main_tab:
+                    self._log("❌ main_tab still None after retry")
+                    return False
+            
             # Save user_data_dir for later use in downloads
             self._user_data_dir = self.config.user_data_dir
             self._log(f"   Browser profile: {self._user_data_dir}")
             
             # Step 1: Inject cookies to main_tab first
             self._log("🍪 Injecting cookies...")
-            await self.browser.main_tab.get("https://grok.com/favicon.ico")
+            try:
+                await self.browser.main_tab.get("https://grok.com/favicon.ico")
+            except Exception as e:
+                self._log(f"⚠️ Favicon navigation error: {e}, retrying...")
+                await asyncio.sleep(2)
+                await self.browser.main_tab.get("https://grok.com/favicon.ico")
             await asyncio.sleep(1)
             
             if self.account.cookies:
@@ -956,6 +978,640 @@ class MultiTabVideoGenerator:
             import traceback
             traceback.print_exc()
             return True  # Continue anyway
+    
+    # ==================== Image-to-Video Methods ====================
+    
+    async def _disable_auto_video_on_tab(self, tab, tab_id: int) -> bool:
+        """
+        Tắt "Bật Tạo Video Tự Động" trong Settings → Hành vi.
+        Chỉ cần chạy 1 lần per browser session.
+        Flow: Avatar → Cài đặt → Hành vi → toggle off → close dialog
+        """
+        if self._auto_video_disabled:
+            return True
+        
+        self._log("⚙️ Disabling auto video generation...", tab_id)
+        
+        # Step 1: Click avatar button (bottom-left) via CDP
+        avatar_pos = await tab.evaluate("""
+            (function() {
+                var container = document.querySelector('div.absolute.bottom-3');
+                if (container) {
+                    var btn = container.querySelector('button[aria-haspopup="menu"]');
+                    if (btn) {
+                        var rect = btn.getBoundingClientRect();
+                        return {found: true, x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                    }
+                }
+                var btns = document.querySelectorAll('button[aria-haspopup="menu"]');
+                for (var b of btns) {
+                    var span = b.querySelector('span.rounded-full');
+                    if (span) {
+                        var rect = b.getBoundingClientRect();
+                        if (rect.width > 0) return {found: true, x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                    }
+                }
+                return {found: false};
+            })()
+        """)
+        if not avatar_pos or not avatar_pos.get('found'):
+            self._log("⚠️ Avatar button not found, skipping", tab_id)
+            return False
+        
+        x, y = avatar_pos['x'], avatar_pos['y']
+        await tab.send(cdp.input_.dispatch_mouse_event(
+            type_="mousePressed", x=x, y=y, button=cdp.input_.MouseButton.LEFT, click_count=1))
+        await asyncio.sleep(0.05)
+        await tab.send(cdp.input_.dispatch_mouse_event(
+            type_="mouseReleased", x=x, y=y, button=cdp.input_.MouseButton.LEFT, click_count=1))
+        await asyncio.sleep(1.5)
+        
+        # Step 2: Click "Cài đặt" / "Settings" menuitem
+        for attempt in range(5):
+            menu_info = await tab.evaluate("""
+                (function() {
+                    var menu = document.querySelector('[role="menu"]');
+                    if (!menu) return {status: 'no_menu'};
+                    var items = menu.querySelectorAll('[role="menuitem"]');
+                    for (var item of items) {
+                        var text = (item.textContent || '').trim();
+                        if (text === 'Cài đặt' || text === 'Settings' || text.includes('Cài đặt') || text.includes('Settings')) {
+                            var rect = item.getBoundingClientRect();
+                            return {status: 'found', x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                        }
+                    }
+                    return {status: 'not_matched'};
+                })()
+            """)
+            if menu_info and menu_info.get('status') == 'found':
+                mx, my = menu_info['x'], menu_info['y']
+                await tab.send(cdp.input_.dispatch_mouse_event(
+                    type_="mousePressed", x=mx, y=my, button=cdp.input_.MouseButton.LEFT, click_count=1))
+                await asyncio.sleep(0.05)
+                await tab.send(cdp.input_.dispatch_mouse_event(
+                    type_="mouseReleased", x=mx, y=my, button=cdp.input_.MouseButton.LEFT, click_count=1))
+                break
+            await asyncio.sleep(0.5)
+        else:
+            self._log("⚠️ Settings menu not found", tab_id)
+            await tab.send(cdp.input_.dispatch_key_event(type_="keyDown", key="Escape"))
+            return False
+        
+        await asyncio.sleep(1.5)
+        
+        # Step 3: Click "Hành vi" / "Behavior" tab
+        await tab.evaluate("""
+            (function() {
+                var dialog = document.querySelector('[role="dialog"]');
+                if (!dialog) return;
+                var buttons = dialog.querySelectorAll('button');
+                for (var btn of buttons) {
+                    var text = (btn.textContent || '').trim();
+                    if (text.includes('Hành vi') || text.includes('Behavior')) {
+                        btn.click(); return;
+                    }
+                }
+            })()
+        """)
+        await asyncio.sleep(1)
+        
+        # Step 4: Toggle off auto video
+        result = await tab.evaluate("""
+            (function() {
+                var dialog = document.querySelector('[role="dialog"]');
+                if (!dialog) return {error: 'no dialog'};
+                var switches = dialog.querySelectorAll('button[role="switch"]');
+                for (var sw of switches) {
+                    var row = sw.closest('.flex') || sw.parentElement;
+                    var labelId = sw.getAttribute('aria-labelledby');
+                    var text = '';
+                    if (labelId) { var el = document.getElementById(labelId); if (el) text = el.textContent; }
+                    if (!text && row) text = row.textContent || '';
+                    if (text.includes('Video Tự Động') || text.includes('Auto Video') ||
+                        text.includes('Tạo Video') || text.includes('Generate Video')) {
+                        if (sw.getAttribute('data-state') === 'checked') {
+                            sw.click();
+                            return {toggled: true};
+                        }
+                        return {toggled: false, msg: 'already off'};
+                    }
+                }
+                return {error: 'switch not found'};
+            })()
+        """)
+        self._log(f"   Auto video toggle: {result}", tab_id)
+        
+        # Step 5: Close dialog
+        await asyncio.sleep(0.5)
+        await tab.evaluate("""
+            (function() {
+                var dialog = document.querySelector('[role="dialog"]');
+                if (!dialog) return;
+                var close = dialog.querySelector('button[aria-label="Close"]') ||
+                            dialog.querySelector('button[aria-label="Đóng"]');
+                if (!close) {
+                    var btns = dialog.querySelectorAll('button');
+                    for (var b of btns) {
+                        if (b.querySelector('svg.lucide-x') || 
+                            (b.querySelector('.sr-only') && ['Đóng','Close'].includes(b.querySelector('.sr-only').textContent.trim()))) {
+                            close = b; break;
+                        }
+                    }
+                }
+                if (close) close.click();
+            })()
+        """)
+        await asyncio.sleep(1)
+        
+        self._auto_video_disabled = True
+        self._log("✅ Auto video disabled", tab_id)
+        return True
+    
+    async def _upload_image_on_tab(self, tab, image_path: str, tab_id: int) -> bool:
+        """Upload ảnh bằng CDP DOM.setFileInputFiles"""
+        abs_path = os.path.abspath(image_path)
+        if not os.path.exists(abs_path):
+            self._log(f"❌ Image not found: {abs_path}", tab_id)
+            return False
+        
+        self._log(f"📤 Uploading: {os.path.basename(abs_path)}", tab_id)
+        
+        # Tìm file input
+        file_input_info = await tab.evaluate("""
+            (function() {
+                var inputs = document.querySelectorAll('input[type="file"]');
+                return inputs.length > 0 ? {found: true, count: inputs.length} : {found: false};
+            })()
+        """)
+        
+        if not file_input_info or not file_input_info.get('found'):
+            # Click upload button to trigger file input creation
+            await tab.evaluate("""
+                (function() {
+                    var btns = document.querySelectorAll('button');
+                    for (var btn of btns) {
+                        var label = btn.getAttribute('aria-label') || btn.textContent || '';
+                        if (label.includes('Tải lên hình ảnh') || label.includes('Upload')) {
+                            btn.click(); return 'clicked';
+                        }
+                    }
+                })()
+            """)
+            await asyncio.sleep(1)
+            file_input_info = await tab.evaluate("""
+                (function() {
+                    var inputs = document.querySelectorAll('input[type="file"]');
+                    return inputs.length > 0 ? {found: true} : {found: false};
+                })()
+            """)
+        
+        if not file_input_info or not file_input_info.get('found'):
+            self._log("❌ Cannot find file input", tab_id)
+            return False
+        
+        # Get node ID and set file
+        doc = await tab.send(cdp.dom.get_document())
+        file_node_id = await tab.send(cdp.dom.query_selector(doc.node_id, 'input[type="file"]'))
+        if not file_node_id:
+            self._log("❌ Cannot get file input node ID", tab_id)
+            return False
+        
+        await tab.send(cdp.dom.set_file_input_files(files=[abs_path], node_id=file_node_id))
+        self._log("✅ File uploaded via CDP", tab_id)
+        await asyncio.sleep(3)
+        return True
+    
+    async def _wait_for_post_redirect(self, tab, tab_id: int, timeout: int = 30) -> Optional[str]:
+        """Chờ redirect từ /imagine → /imagine/post/{uuid} sau upload ảnh"""
+        pattern = r'/imagine/post/([a-f0-9-]{36})'
+        for i in range(timeout):
+            if not self._running:
+                return None
+            url = await tab.evaluate("window.location.href")
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+            await asyncio.sleep(1)
+            if i % 5 == 0:
+                self._log(f"   Waiting for redirect... ({i}s)", tab_id)
+        return None
+    
+    async def _fill_prompt_and_submit_on_post_page(self, tab, prompt: str, settings: VideoSettings, tab_id: int) -> bool:
+        """
+        Post page flow (sau upload ảnh):
+        1. Fill prompt vào TEXTAREA
+        2. Click "Tùy chọn Video" → mở settings panel
+        3. Chọn settings (duration, resolution) — KHÔNG có aspect ratio trên post page
+        4. Click "Tạo video" (CDP click) — đây là nút submit
+        """
+        # Step 1: Fill prompt
+        escaped = prompt.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
+        fill_result = await tab.evaluate(f"""
+            (function() {{
+                var textarea = document.querySelector('textarea');
+                if (textarea) {{
+                    textarea.focus();
+                    var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                    nativeSet.call(textarea, '{escaped}');
+                    textarea.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    textarea.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    return 'filled_textarea';
+                }}
+                var editor = document.querySelector('div.tiptap.ProseMirror') ||
+                             document.querySelector('div[contenteditable="true"]');
+                if (editor) {{
+                    editor.focus();
+                    editor.innerHTML = '<p>{escaped}</p>';
+                    editor.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    return 'filled_prosemirror';
+                }}
+                return 'no_editor';
+            }})()
+        """)
+        self._log(f"   Prompt: {fill_result}", tab_id)
+        if 'no_editor' in fill_result:
+            return False
+        await asyncio.sleep(1)
+        
+        # Step 2: Click "Tùy chọn Video" button (CDP click for Radix UI)
+        btn_pos = await tab.evaluate("""
+            (function() {
+                var btns = document.querySelectorAll('button');
+                for (var b of btns) {
+                    var label = b.getAttribute('aria-label') || '';
+                    if (label === 'Tùy chọn Video' || label === 'Video options' || label === 'Video Options') {
+                        var rect = b.getBoundingClientRect();
+                        return {found: true, x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                    }
+                }
+                return {found: false};
+            })()
+        """)
+        
+        if btn_pos and btn_pos.get('found'):
+            bx, by = btn_pos['x'], btn_pos['y']
+            await tab.send(cdp.input_.dispatch_mouse_event(
+                type_="mousePressed", x=bx, y=by, button=cdp.input_.MouseButton.LEFT, click_count=1))
+            await asyncio.sleep(0.05)
+            await tab.send(cdp.input_.dispatch_mouse_event(
+                type_="mouseReleased", x=bx, y=by, button=cdp.input_.MouseButton.LEFT, click_count=1))
+            self._log("   Tùy chọn Video: opened", tab_id)
+            await asyncio.sleep(1.5)
+            
+            # Step 3: Select settings (duration + resolution only, NO aspect ratio on post page)
+            # Settings buttons are inside a Radix popover panel
+            # Use JS click (not CDP) for toggle buttons inside popover, then verify
+            duration_label = f"{settings.video_length}s"
+            resolution_label = settings.resolution
+            
+            for label in [duration_label, resolution_label]:
+                # First try: find and JS click within popover panel
+                click_result = await tab.evaluate(f"""
+                    (function() {{
+                        // Find popover panel
+                        var popover = document.querySelector('[data-radix-popper-content-wrapper]');
+                        if (!popover) {{
+                            var panels = document.querySelectorAll('[data-state="open"]');
+                            for (var p of panels) {{
+                                if (p.querySelectorAll('button').length >= 2) {{ popover = p; break; }}
+                            }}
+                        }}
+                        var scope = popover || document;
+                        var buttons = scope.querySelectorAll('button');
+                        for (var btn of buttons) {{
+                            var ariaLabel = btn.getAttribute('aria-label') || '';
+                            var text = btn.textContent.trim();
+                            if (ariaLabel === '{label}' || text === '{label}') {{
+                                btn.click();
+                                return {{clicked: true, method: 'js', inPopover: !!popover}};
+                            }}
+                        }}
+                        return {{clicked: false}};
+                    }})()
+                """)
+                
+                if click_result and click_result.get('clicked'):
+                    self._log(f"   Setting {label}: ✅ (JS click, popover={click_result.get('inPopover')})", tab_id)
+                else:
+                    # Fallback: CDP click on any matching button
+                    pos = await tab.evaluate(f"""
+                        (function() {{
+                            var buttons = document.querySelectorAll('button');
+                            for (var btn of buttons) {{
+                                var ariaLabel = btn.getAttribute('aria-label') || '';
+                                var text = btn.textContent.trim();
+                                if (ariaLabel === '{label}' || text === '{label}') {{
+                                    var rect = btn.getBoundingClientRect();
+                                    return {{found: true, x: rect.x + rect.width/2, y: rect.y + rect.height/2}};
+                                }}
+                            }}
+                            return {{found: false}};
+                        }})()
+                    """)
+                    if pos and pos.get('found'):
+                        sx, sy = pos['x'], pos['y']
+                        await tab.send(cdp.input_.dispatch_mouse_event(
+                            type_="mousePressed", x=sx, y=sy, button=cdp.input_.MouseButton.LEFT, click_count=1))
+                        await asyncio.sleep(0.05)
+                        await tab.send(cdp.input_.dispatch_mouse_event(
+                            type_="mouseReleased", x=sx, y=sy, button=cdp.input_.MouseButton.LEFT, click_count=1))
+                        self._log(f"   Setting {label}: ✅ (CDP fallback)", tab_id)
+                    else:
+                        self._log(f"   Setting {label}: not found", tab_id)
+                await asyncio.sleep(0.5)
+                
+                # Check if panel is still open, re-open if closed
+                panel_open = await tab.evaluate("""
+                    (function() {
+                        var popover = document.querySelector('[data-radix-popper-content-wrapper]');
+                        if (popover) return true;
+                        var panels = document.querySelectorAll('[data-state="open"]');
+                        for (var p of panels) {
+                            if (p.querySelectorAll('button').length >= 2) return true;
+                        }
+                        return false;
+                    })()
+                """)
+                if not panel_open:
+                    self._log("   Panel closed, re-opening...", tab_id)
+                    # Re-click "Tùy chọn Video"
+                    reopen = await tab.evaluate("""
+                        (function() {
+                            var btns = document.querySelectorAll('button');
+                            for (var b of btns) {
+                                var label = b.getAttribute('aria-label') || '';
+                                if (label === 'Tùy chọn Video' || label === 'Video options') {
+                                    var rect = b.getBoundingClientRect();
+                                    return {found: true, x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                                }
+                            }
+                            return {found: false};
+                        })()
+                    """)
+                    if reopen and reopen.get('found'):
+                        rx, ry = reopen['x'], reopen['y']
+                        await tab.send(cdp.input_.dispatch_mouse_event(
+                            type_="mousePressed", x=rx, y=ry, button=cdp.input_.MouseButton.LEFT, click_count=1))
+                        await asyncio.sleep(0.05)
+                        await tab.send(cdp.input_.dispatch_mouse_event(
+                            type_="mouseReleased", x=rx, y=ry, button=cdp.input_.MouseButton.LEFT, click_count=1))
+                        await asyncio.sleep(1)
+        else:
+            self._log("   ⚠️ 'Tùy chọn Video' not found, submitting directly", tab_id)
+        
+        # Step 4: Click "Tạo video" button (CDP click) — this IS the submit
+        await asyncio.sleep(0.5)
+        return await self._click_create_video_button(tab, tab_id)
+    
+    async def _click_create_video_button(self, tab, tab_id: int) -> bool:
+        """Click nút 'Tạo video' bằng CDP mouse click"""
+        create_pos = await tab.evaluate("""
+            (function() {
+                var btns = document.querySelectorAll('button');
+                for (var b of btns) {
+                    var label = b.getAttribute('aria-label') || '';
+                    var text = (b.textContent || '').trim();
+                    if (label === 'Tạo video' || label === 'Create video' || label === 'Generate video' ||
+                        text === 'Tạo video' || text === 'Create video') {
+                        var rect = b.getBoundingClientRect();
+                        return {found: true, disabled: b.disabled, x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                    }
+                }
+                return {found: false};
+            })()
+        """)
+        
+        if not create_pos or not create_pos.get('found'):
+            self._log("❌ 'Tạo video' button not found", tab_id)
+            return False
+        
+        # Wait for enabled
+        if create_pos.get('disabled'):
+            for w in range(15):
+                await asyncio.sleep(1)
+                create_pos = await tab.evaluate("""
+                    (function() {
+                        var btns = document.querySelectorAll('button');
+                        for (var b of btns) {
+                            var label = b.getAttribute('aria-label') || '';
+                            if (label === 'Tạo video' || label === 'Create video') {
+                                var rect = b.getBoundingClientRect();
+                                return {found: true, disabled: b.disabled, x: rect.x + rect.width/2, y: rect.y + rect.height/2};
+                            }
+                        }
+                        return {found: false};
+                    })()
+                """)
+                if create_pos and not create_pos.get('disabled'):
+                    break
+        
+        if not create_pos or create_pos.get('disabled'):
+            self._log("❌ 'Tạo video' still disabled", tab_id)
+            return False
+        
+        cx, cy = create_pos['x'], create_pos['y']
+        await tab.send(cdp.input_.dispatch_mouse_event(
+            type_="mousePressed", x=cx, y=cy, button=cdp.input_.MouseButton.LEFT, click_count=1))
+        await asyncio.sleep(0.05)
+        await tab.send(cdp.input_.dispatch_mouse_event(
+            type_="mouseReleased", x=cx, y=cy, button=cdp.input_.MouseButton.LEFT, click_count=1))
+        self._log("✅ Tạo video: CDP clicked!", tab_id)
+        return True
+    
+    async def generate_image_to_video_on_tab(
+        self,
+        tab_id: int,
+        prompt: str,
+        image_path: str,
+        settings: VideoSettings,
+        retry_count: int = 0
+    ) -> VideoTask:
+        """
+        Image-to-Video flow trên 1 tab:
+        1. Navigate /imagine → disable auto-video (1 lần)
+        2. Upload image → wait redirect → /imagine/post/{uuid}
+        3. Fill prompt → Tùy chọn Video → settings → Tạo video
+        4. Wait render → share → download
+        """
+        MAX_RETRIES = 1
+        task = VideoTask(
+            account_email=self.account.email,
+            prompt=prompt,
+            image_path=image_path,
+            settings=settings,
+            status="creating"
+        )
+        
+        if tab_id >= len(self.tabs):
+            task.status = "failed"
+            task.error_message = f"Invalid tab_id: {tab_id}"
+            return task
+        
+        tab = self.tabs[tab_id]
+        
+        try:
+            self.tab_ready[tab_id] = False
+            
+            # Step 1: Navigate to /imagine
+            current_url = await tab.evaluate("window.location.href")
+            if '/imagine' not in current_url or '/post/' in current_url:
+                self._log("🔄 Navigating to /imagine...", tab_id)
+                await tab.get(IMAGINE_URL)
+                await asyncio.sleep(2)
+            
+            # Step 2: Disable auto-video (once per session)
+            if not self._auto_video_disabled:
+                await self._disable_auto_video_on_tab(tab, tab_id)
+            
+            # Step 3: Upload image
+            self._log(f"📤 Uploading: {os.path.basename(image_path)}", tab_id)
+            if not await self._upload_image_on_tab(tab, image_path, tab_id):
+                task.status = "failed"
+                task.error_message = "Upload failed"
+                self.tab_ready[tab_id] = True
+                return task
+            
+            # Step 4: Wait for redirect to /imagine/post/{uuid}
+            self._log("⏳ Waiting for post redirect...", tab_id)
+            upload_post_id = await self._wait_for_post_redirect(tab, tab_id, timeout=30)
+            if not upload_post_id:
+                if retry_count < MAX_RETRIES:
+                    self._log("⚠️ No redirect, retrying...", tab_id)
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                    self.tab_ready[tab_id] = True
+                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1)
+                task.status = "failed"
+                task.error_message = "No redirect after upload"
+                self.tab_ready[tab_id] = True
+                return task
+            
+            self._log(f"✅ Upload Post ID: {upload_post_id}", tab_id)
+            await asyncio.sleep(2)
+            
+            # Step 5: Wait for editor, fill prompt, select settings, click Tạo video
+            editor_found = False
+            for w in range(10):
+                has = await tab.evaluate("""
+                    (function() {
+                        return !!(document.querySelector('textarea') || 
+                                  document.querySelector('div.tiptap.ProseMirror'));
+                    })()
+                """)
+                if has:
+                    editor_found = True
+                    break
+                await asyncio.sleep(1)
+            
+            if not editor_found:
+                task.status = "failed"
+                task.error_message = "Editor not found on post page"
+                self.tab_ready[tab_id] = True
+                return task
+            
+            self._log("✏️ Filling prompt + settings...", tab_id)
+            if not await self._fill_prompt_and_submit_on_post_page(tab, prompt, settings, tab_id):
+                if retry_count < MAX_RETRIES:
+                    self._log("⚠️ Submit failed, retrying...", tab_id)
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                    self.tab_ready[tab_id] = True
+                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1)
+                task.status = "failed"
+                task.error_message = "Failed to submit on post page"
+                self.tab_ready[tab_id] = True
+                return task
+            
+            await asyncio.sleep(3)
+            
+            # Step 6: Wait for new post ID (video generation creates new post)
+            self._log("⏳ Waiting for video post ID...", tab_id)
+            new_post_id = None
+            for i in range(60):
+                if not self._running:
+                    break
+                try:
+                    url = await tab.evaluate("window.location.href")
+                except Exception:
+                    break
+                match = re.search(r'/imagine/post/([a-f0-9-]{36})', url)
+                if match:
+                    pid = match.group(1)
+                    if pid != upload_post_id:
+                        new_post_id = pid
+                        break
+                await asyncio.sleep(1)
+                if i % 10 == 0 and i > 0:
+                    self._log(f"   Waiting... ({i}s)", tab_id)
+            
+            post_id = new_post_id or upload_post_id
+            task.post_id = post_id
+            task.media_url = VIDEO_DOWNLOAD_URL.format(post_id=post_id)
+            self._log(f"✅ Post ID: {post_id}", tab_id)
+            
+            # Step 7: Wait for video render
+            self._log("⏳ Waiting for video render...", tab_id)
+            video_status = await self._wait_for_video_ready_on_tab(tab, tab_id, timeout=300)
+            
+            if video_status == 'rejected':
+                if retry_count < MAX_RETRIES:
+                    self._log("🔄 Video rejected, retrying...", tab_id)
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                    self.tab_ready[tab_id] = True
+                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1)
+                task.status = "failed"
+                task.error_message = "Video rejected"
+                self.tab_ready[tab_id] = True
+                return task
+            
+            if video_status == 'ready':
+                # Share + Download
+                self._log("🔗 Creating share link...", tab_id)
+                await self._click_share_button_on_tab(tab, tab_id)
+                await asyncio.sleep(3)
+                
+                self._log("📥 Downloading video...", tab_id)
+                output_path = await self._download_video_on_tab(tab, task, tab_id)
+                if output_path:
+                    task.output_path = output_path
+                    self._log(f"✅ Downloaded: {os.path.basename(output_path)}", tab_id)
+            elif video_status == 'timeout':
+                if retry_count < MAX_RETRIES:
+                    self._log("⏰ Render timeout, retrying...", tab_id)
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                    self.tab_ready[tab_id] = True
+                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1)
+                self._log("⚠️ Render timeout, saving for later", tab_id)
+            elif video_status == 'stopped':
+                task.status = "failed"
+                task.error_message = "Generation stopped"
+                self.tab_ready[tab_id] = True
+                return task
+            
+            task.status = "completed"
+            task.completed_at = datetime.now()
+            task.user_data_dir = self._user_data_dir
+            task.account_cookies = self.account.cookies
+            
+            # Navigate back for next
+            self._log("🔄 Ready for next video...", tab_id)
+            await tab.get(IMAGINE_URL)
+            await asyncio.sleep(1.5)
+            self.tab_ready[tab_id] = True
+            return task
+            
+        except Exception as e:
+            task.status = "failed"
+            task.error_message = str(e)
+            self._log(f"❌ Error: {e}", tab_id)
+            import traceback
+            traceback.print_exc()
+            self.tab_ready[tab_id] = True
+            return task
+    
+    # ==================== Original Text-to-Video Methods ====================
     
     async def generate_on_tab(
         self,
@@ -1224,13 +1880,17 @@ class MultiTabVideoGenerator:
         
         The video is hosted on imagine-public.x.ai which requires __cf_bm cookie.
         We use CDP to set download behavior and navigate to video URL.
+        
+        Fix: Tìm file theo post_id thay vì newest file, tránh lẫn giữa các tab/account.
         """
         try:
-            import glob
-            
             # Build video URL
             video_url = task.media_url
             download_url = f"{video_url}&dl=1" if '?' in video_url else f"{video_url}?dl=1"
+            post_id = task.post_id
+            
+            # Expected filename from server: {post_id}.mp4
+            expected_file = OUTPUT_DIR / f"{post_id}.mp4"
             
             self._log(f"   Downloading video...", tab_id)
             
@@ -1252,27 +1912,42 @@ class MultiTabVideoGenerator:
             self._log(f"   Triggering download...", tab_id)
             await download_tab.get(download_url)
             
-            # Step 4: Wait for download to complete
+            # Step 4: Wait for download to complete — tìm theo post_id, không dùng newest
             for i in range(30):  # Max 2.5 minutes
                 await asyncio.sleep(5)
                 
-                # Check for downloaded file
-                mp4_files = glob.glob(str(OUTPUT_DIR / "*.mp4"))
-                if mp4_files:
-                    newest = max(mp4_files, key=os.path.getctime)
-                    size = os.path.getsize(newest)
-                    
-                    # Check if download is complete (file size stable and > 10KB)
+                # Check for expected file (server names it {post_id}.mp4)
+                if expected_file.exists():
+                    size = os.path.getsize(expected_file)
                     if size > 10000:
                         await asyncio.sleep(2)
-                        new_size = os.path.getsize(newest)
+                        new_size = os.path.getsize(expected_file)
                         if new_size == size:  # Size stable = download complete
-                            # Close download tab
                             try:
                                 await download_tab.close()
                             except:
                                 pass
-                            return newest
+                            self._log(f"✅ Downloaded: {post_id}.mp4", tab_id)
+                            return str(expected_file)
+                
+                # Fallback: check for share-videos file pattern (some servers use different names)
+                import glob
+                patterns = [
+                    str(OUTPUT_DIR / f"*{post_id}*"),
+                    str(OUTPUT_DIR / f"share-videos*{post_id[:8]}*"),
+                ]
+                for pattern in patterns:
+                    matches = glob.glob(pattern)
+                    for match_file in matches:
+                        if match_file.endswith('.mp4') and os.path.getsize(match_file) > 10000:
+                            await asyncio.sleep(2)
+                            if os.path.getsize(match_file) == os.path.getsize(match_file):
+                                try:
+                                    await download_tab.close()
+                                except:
+                                    pass
+                                self._log(f"✅ Downloaded: {os.path.basename(match_file)}", tab_id)
+                                return match_file
                 
                 if i % 3 == 0:
                     self._log(f"   Waiting for download... ({i * 5}s)", tab_id)
@@ -1290,7 +1965,6 @@ class MultiTabVideoGenerator:
             self._log(f"⚠️ Download error: {e}", tab_id)
             import traceback
             traceback.print_exc()
-            return None
             return None
     
     async def _select_video_mode_on_tab(self, tab, tab_id: int, settings: VideoSettings = None) -> None:
@@ -1524,31 +2198,39 @@ class MultiTabVideoGenerator:
     
     async def generate_batch(
         self,
-        prompts: List[str],
+        prompts,
         settings: VideoSettings,
         on_task_complete: Optional[Callable] = None,
         max_retries: int = 1
     ) -> List[VideoTask]:
         """
         Generate multiple videos concurrently using all tabs.
-        Returns list of completed tasks.
         
         Args:
-            prompts: List of prompts to generate
+            prompts: List of str (text-to-video) OR List of Tuple[str, Optional[str]] (prompt, image_path)
             settings: Video settings
             on_task_complete: Callback when each task completes
-            max_retries: Number of retries for failed tasks (default 1)
+            max_retries: Number of retries for failed tasks
         """
         results: List[VideoTask] = []
-        prompt_queue = list(prompts)
-        retry_queue: List[Tuple[str, int]] = []  # (prompt, retry_count)
-        active_tasks: Dict[int, Tuple[asyncio.Task, str, int]] = {}  # tab_id -> (task, prompt, retry_count)
         
-        self._log(f"📋 Starting batch: {len(prompts)} prompts, {len(self.tabs)} tabs")
+        # Normalize prompts to list of (prompt, image_path_or_none)
+        normalized = []
+        for p in prompts:
+            if isinstance(p, tuple):
+                normalized.append(p)  # (prompt, image_path)
+            else:
+                normalized.append((p, None))  # text-only
+        
+        prompt_queue = list(normalized)
+        retry_queue: List[Tuple[Tuple[str, Optional[str]], int]] = []  # ((prompt, image), retry_count)
+        active_tasks: Dict[int, Tuple[asyncio.Task, Tuple[str, Optional[str]], int]] = {}
+        
+        mode = "Image→Video" if any(img for _, img in normalized) else "Text→Video"
+        self._log(f"📋 Starting batch ({mode}): {len(normalized)} prompts, {len(self.tabs)} tabs")
         
         while prompt_queue or retry_queue or active_tasks:
             if not self._running:
-                # Cancel all active tasks
                 for task_info in active_tasks.values():
                     task_info[0].cancel()
                 break
@@ -1556,44 +2238,46 @@ class MultiTabVideoGenerator:
             # Start new tasks on ready tabs
             for tab_id in range(len(self.tabs)):
                 if tab_id not in active_tasks and self.tab_ready[tab_id]:
-                    prompt = None
+                    item = None
                     retry_count = 0
                     
-                    # Prioritize retry queue
                     if retry_queue:
-                        prompt, retry_count = retry_queue.pop(0)
-                        self._log(f"🔄 Retrying ({retry_count}/{max_retries}): {prompt[:30]}...", tab_id)
+                        item, retry_count = retry_queue.pop(0)
+                        self._log(f"🔄 Retrying ({retry_count}/{max_retries}): {item[0][:30]}...", tab_id)
                     elif prompt_queue:
-                        prompt = prompt_queue.pop(0)
-                        self._log(f"▶️ Starting: {prompt[:30]}...", tab_id)
+                        item = prompt_queue.pop(0)
+                        self._log(f"▶️ Starting: {item[0][:30]}...", tab_id)
                     
-                    if prompt:
-                        # Create async task
-                        task = asyncio.create_task(
-                            self.generate_on_tab(tab_id, prompt, settings)
-                        )
-                        active_tasks[tab_id] = (task, prompt, retry_count)
+                    if item:
+                        prompt_text, image_path = item
+                        if image_path:
+                            # Image-to-video flow
+                            task = asyncio.create_task(
+                                self.generate_image_to_video_on_tab(tab_id, prompt_text, image_path, settings)
+                            )
+                        else:
+                            # Text-to-video flow
+                            task = asyncio.create_task(
+                                self.generate_on_tab(tab_id, prompt_text, settings)
+                            )
+                        active_tasks[tab_id] = (task, item, retry_count)
             
             # Wait for any task to complete
             if active_tasks:
                 tasks_only = [t[0] for t in active_tasks.values()]
                 done, _ = await asyncio.wait(
-                    tasks_only,
-                    timeout=1.0,
-                    return_when=asyncio.FIRST_COMPLETED
+                    tasks_only, timeout=1.0, return_when=asyncio.FIRST_COMPLETED
                 )
                 
-                # Process completed tasks
                 for completed_task in done:
-                    # Find which tab_id this task belongs to
                     completed_tab_id = None
-                    prompt_used = None
+                    item_used = None
                     retry_count = 0
                     
-                    for tid, (t, p, r) in list(active_tasks.items()):
+                    for tid, (t, item, r) in list(active_tasks.items()):
                         if t == completed_task:
                             completed_tab_id = tid
-                            prompt_used = p
+                            item_used = item
                             retry_count = r
                             del active_tasks[tid]
                             break
@@ -1601,26 +2285,21 @@ class MultiTabVideoGenerator:
                     try:
                         video_task = completed_task.result()
                         
-                        # Check if failed and should retry
-                        if video_task.status == "failed" and retry_count < max_retries and prompt_used:
+                        if video_task.status == "failed" and retry_count < max_retries and item_used:
                             self._log(f"⚠️ Failed, will retry: {video_task.error_message}", completed_tab_id or -1)
-                            retry_queue.append((prompt_used, retry_count + 1))
-                            # Don't add to results yet, wait for retry
+                            retry_queue.append((item_used, retry_count + 1))
                         else:
                             results.append(video_task)
-                            
                             if on_task_complete:
                                 on_task_complete(video_task)
-                            
                             if video_task.status == "completed":
                                 self._log(f"✅ Done: {video_task.post_id}", completed_tab_id or -1)
                             else:
-                                self._log(f"❌ Failed (no more retries): {video_task.error_message}", completed_tab_id or -1)
+                                self._log(f"❌ Failed: {video_task.error_message}", completed_tab_id or -1)
                     except Exception as e:
                         self._log(f"❌ Task error: {e}")
-                        # Add to retry queue if possible
-                        if retry_count < max_retries and prompt_used:
-                            retry_queue.append((prompt_used, retry_count + 1))
+                        if retry_count < max_retries and item_used:
+                            retry_queue.append((item_used, retry_count + 1))
             else:
                 await asyncio.sleep(0.5)
         
@@ -1631,7 +2310,7 @@ class MultiTabVideoGenerator:
 
 def run_multi_tab_generation(
     account: Account,
-    prompts: List[str],
+    prompts,
     settings: VideoSettings,
     num_tabs: int = 3,
     headless: bool = True,
@@ -1643,15 +2322,12 @@ def run_multi_tab_generation(
     
     Args:
         account: Account to use
-        prompts: List of prompts to generate
+        prompts: List[str] or List[Tuple[str, Optional[str]]] (prompt, image_path)
         settings: Video settings
         num_tabs: Number of tabs (max 3)
         headless: Run headless
         on_status: Status callback (email, message)
         on_task_complete: Callback when each task completes
-    
-    Returns:
-        List of VideoTask results
     """
     return asyncio.run(_run_multi_tab_async(
         account, prompts, settings, num_tabs, headless, on_status, on_task_complete
@@ -1660,7 +2336,7 @@ def run_multi_tab_generation(
 
 async def _run_multi_tab_async(
     account: Account,
-    prompts: List[str],
+    prompts,
     settings: VideoSettings,
     num_tabs: int = 3,
     headless: bool = True,

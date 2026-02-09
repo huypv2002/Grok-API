@@ -32,6 +32,7 @@ class VideoTask:
     id: str = field(default_factory=lambda: str(uuid4()))
     account_email: str = ""
     prompt: str = ""
+    image_path: Optional[str] = None  # Path to image for image-to-video mode
     settings: VideoSettings = field(default_factory=VideoSettings)
     status: Literal["pending", "creating", "completed", "failed"] = "pending"
     post_id: Optional[str] = None

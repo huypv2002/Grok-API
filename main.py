@@ -73,10 +73,30 @@ def main():
     os.chdir(app_dir)
 
     # 2. Tạo thư mục cần thiết
-    os.makedirs("data", exist_ok=True)
-    os.makedirs("output", exist_ok=True)
+    for d in ["data", "data/profiles", "output"]:
+        os.makedirs(d, exist_ok=True)
 
-    # 3. Import và chạy app
+    # 3. Log startup info (debug cho EXE)
+    try:
+        import platform
+        with open(os.path.join("data", "startup.log"), "w", encoding="utf-8") as f:
+            import datetime
+            f.write(f"[{datetime.datetime.now().isoformat()}] App starting\n")
+            f.write(f"  app_dir: {app_dir}\n")
+            f.write(f"  cwd: {os.getcwd()}\n")
+            f.write(f"  sys.executable: {sys.executable}\n")
+            f.write(f"  frozen: {getattr(sys, 'frozen', False)}\n")
+            f.write(f"  platform: {platform.system()} {platform.release()} {platform.machine()}\n")
+            f.write(f"  python: {sys.version}\n")
+            try:
+                nbd = __nuitka_binary_dir  # type: ignore[name-defined]
+                f.write(f"  __nuitka_binary_dir: {nbd}\n")
+            except NameError:
+                f.write(f"  __nuitka_binary_dir: N/A (dev mode)\n")
+    except Exception:
+        pass
+
+    # 4. Import và chạy app
     from PySide6.QtWidgets import QApplication, QDialog
     from src.gui.login_dialog import AppLoginDialog
     from src.gui import MainWindow

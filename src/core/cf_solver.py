@@ -26,8 +26,20 @@ except ImportError:
 # Cache file for cf_clearance
 CF_CACHE_FILE = Path("data/cf_clearance_cache.json")
 
-# Fixed user agent to match API requests
-FIXED_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+# Fixed user agent — platform-aware for Windows/macOS
+import platform as _platform
+
+def _build_fixed_user_agent() -> str:
+    """Build fixed Chrome UA string matching the current OS."""
+    sys_name = _platform.system()
+    if sys_name == "Windows":
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+    elif sys_name == "Darwin":
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+    else:
+        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+
+FIXED_USER_AGENT = _build_fixed_user_agent()
 
 
 def get_chrome_user_agent() -> str:

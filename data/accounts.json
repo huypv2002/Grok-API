@@ -6,15 +6,18 @@
       "fingerprint_id": "36e48d65-a7fc-4017-ab81-6dd6006afb15",
       "status": "logged_in",
       "cookies": {
-        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNjI2ZjZlYWMtYzY0YS00NzQwLTgyZjAtNDY1NzQ5YzljZWVkIn0.8daWmBDGpC0Nqlm5n-MA8wmpuiSJGL2riT6cHDY69P0",
-        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNjI2ZjZlYWMtYzY0YS00NzQwLTgyZjAtNDY1NzQ5YzljZWVkIn0.8daWmBDGpC0Nqlm5n-MA8wmpuiSJGL2riT6cHDY69P0",
-        "last-logged-in-with": "EMAIL",
-        "referrer": "grok-com",
-        "cf_clearance": "cajxiX154.xsRoqPAncT7CSxvj3ju5_hMQMWsyEGf1Y-1770268650-1.2.1.1-8BxdILKCDvzWBEOQUSU54YPakv3R6RW_o2Ty5z7E3wGB9evCz3K1qsWG5FECPU.ZJTbCdSp72Mvt_M.hdoubsEaIoOGpAKKw0_.PHRjwXA3kh4aWOSjVIyFXtDZIJHOuP0Q5RqDQxUZ1cjRSy8xSbg6Y3FgLg.PdKvb8T4vPe8ROl51sPG3WZxqoNcLFtyKGyERNIzZT4eNXQ_VIRiHhApvyonsJqKnmqJVHIusTBZY",
-        "__cf_bm": "uThhd.rlzAtzwOYcQUplD5jC2IcttEFjrWtjCkqAo_0-1770268648-1.0.1.1-EZTVoToVdDWvWQ1JCT6niKFu1vYToPcnWDeRzyJprtQEyA27YJXMV0pS4rCAdq2MtyIK0bUEiRlWw.9Fm6N01.btR9ICwLe.xVJlU1G8U_Q"
+        "_ga_8FEWB057YH": "GS2.1.s1770604270$o1$g1$t1770604324$j6$l0$h0",
+        "x-userid": "0b3c11d1-ff30-46a3-a11b-f5243cd78079",
+        "mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel": "%7B%22distinct_id%22%3A%220b3c11d1-ff30-46a3-a11b-f5243cd78079%22%2C%22%24device_id%22%3A%2200c07410-27b6-409d-9996-17dedcf38e16%22%2C%22%24initial_referrer%22%3A%22https%3A%2F%2Fgrok.com%2F%3F__cf_chl_tk%3DwSxp3yazrUI_BO98xSA5_JOLAblYvNDDJD0SxO29gaY-1770604266-1.0.1.1-SZ3b1Zt6R46vv2XMKxOOUEPYHyV.Jexb5rihEACMyxY%22%2C%22%24initial_referring_domain%22%3A%22grok.com%22%2C%22%24user_id%22%3A%220b3c11d1-ff30-46a3-a11b-f5243cd78079%22%7D",
+        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYWU5ZWYxNGEtOGE4MS00YmRhLWFkYTMtZmFlYjk0ZmQxYjc3In0.WZuUfsKzlSHDvAlBOuLqqwSvB_OdwU56zWMb2r623QA",
+        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiYWU5ZWYxNGEtOGE4MS00YmRhLWFkYTMtZmFlYjk0ZmQxYjc3In0.WZuUfsKzlSHDvAlBOuLqqwSvB_OdwU56zWMb2r623QA",
+        "__cf_bm": "WO88Spi8gBgPAC4N.nQIugUTGQHiOrXpVQyQcybQKFk-1770604266-1.0.1.1-nepc7fLOPuDHVVktIIVDBGl.UvbvudohSvIOVj5WFLWg2T0ZROxlqBhOZrdrafJVFSdhkaOk189iW7GD89unMR6nMkxcm24a8jvKt1lPYck",
+        "i18nextLng": "vi",
+        "cf_clearance": "_1DD0Sb_Xx2pATBpiEFJPwUHqVpd4zbD4WN80iZIN70-1770604270-1.2.1.1-hLuQ98TTccK1hPcO.btorxHfFzTvSFS0xgWjRarEXpg34wn7mGoKahKrMXke1kVyH7_xYJcePu239SCkDL28XSpcGvC27GRMwrijjAlUO4jv_zGSeMoyV0NTKS_cPDvdeh4XxfCorfkldmJYLFlxmTMlMBEA2wh8xoqRuGGM_GA7HXIBnFaCCWd0VLZWI1DfZnBsTE2W8IgYumVidtbGpLpMsuZLHzhwa9WjDgVNk0Qp7MG1bkftdIeaNuM9gZ9R",
+        "_ga": "GA1.1.1111951396.1770604270"
       },
-      "last_login": "2026-02-05T12:19:22.927436",
-      "error_message": null
+      "last_login": "2026-02-09T09:32:05.108531",
+      "error_message": "Email field not found"
     },
     {
       "email": "lanvo5og50ek8cb1280@outlook.com",
@@ -22,15 +25,37 @@
       "fingerprint_id": "005b87b5-5abd-43cd-b7cd-83b53b95ac9d",
       "status": "logged_in",
       "cookies": {
-        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMmJmODg2ZGUtYWY4ZC00OTM0LWE1OWEtNzBhYTFlNjVhNzAxIn0.0UxKI2OGLc8P-ONLE9ONuzJn8pQ9KGLZy3k7L53wcd0",
-        "last-logged-in-with": "EMAIL",
-        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMmJmODg2ZGUtYWY4ZC00OTM0LWE1OWEtNzBhYTFlNjVhNzAxIn0.0UxKI2OGLc8P-ONLE9ONuzJn8pQ9KGLZy3k7L53wcd0",
-        "referrer": "grok-com",
-        "cf_clearance": "ix9nKOHRJlnbBEPWJP15r5TBNWz12iBOT0v9.fnw244-1770268711-1.2.1.1-NBHFfH7dyku8dYwTJWmHB6a8nLoXgU6CxILwxUKC4cY3BO3vd4N6miw2iP2E2W9XdOw1Net69BwPYxYUl0bR_4sCkYEsf1Zqv7BiwFL7pWWJ2cTed5EOwlcTbLHF6NU3UHVWDWPn5lemfWY5dbh8dUpMxTV.38.0QFX.nOcTACMJI.nCUnjc9z4fDiX8dxlGvIzdPncR1yjmCVq5rc8h7EdKj2sf6TsK22HBHJgy0IA",
-        "__cf_bm": ".jblF0P2kIZ7L6behweuSPbL0qD.JlPZzJ4tocxj7f8-1770268710-1.0.1.1-VZiPb.zNJZAnh_wWLggUsfacYwuXdh6oTXyH4W7NBOjqDp93WKMSMKPI.DFl3_DaJhx6Gmv1F7xOtzsLOi38XX65RtyCNk1jtMPAWdKfHRQ"
+        "_ga_8FEWB057YH": "GS2.1.s1770611470$o1$g1$t1770611518$j12$l0$h0",
+        "x-userid": "9fb55a0f-3a22-4a37-9b97-44f30e1083e6",
+        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiZjhjYzhjNDctOWJhYi00YjUwLWI2OGQtZGUyYTZhZTAwOGIxIn0.KIVW9xR4KlUze9l6j1DlbcORhd6Kvx0aXh16GEKRi7o",
+        "mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel": "%7B%22distinct_id%22%3A%229fb55a0f-3a22-4a37-9b97-44f30e1083e6%22%2C%22%24device_id%22%3A%22f37f452d-70d7-4de1-b05c-210ea5df6e47%22%2C%22%24initial_referrer%22%3A%22https%3A%2F%2Fgrok.com%2F%3F__cf_chl_tk%3DNS1V9uWIFnV5F.BJy_NwLiHc1XIp_l2RHyU8W9Ck1vo-1770611461-1.0.1.1-6fWYAjVE7nAV4JhJIa24zcvujq9.KLN3fa3JwVcKqYs%22%2C%22%24initial_referring_domain%22%3A%22grok.com%22%2C%22%24user_id%22%3A%229fb55a0f-3a22-4a37-9b97-44f30e1083e6%22%2C%22__mps%22%3A%7B%7D%2C%22__mpso%22%3A%7B%7D%2C%22__mpus%22%3A%7B%7D%2C%22__mpa%22%3A%7B%7D%2C%22__mpu%22%3A%7B%7D%2C%22__mpr%22%3A%5B%5D%2C%22__mpap%22%3A%5B%5D%7D",
+        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiZjhjYzhjNDctOWJhYi00YjUwLWI2OGQtZGUyYTZhZTAwOGIxIn0.KIVW9xR4KlUze9l6j1DlbcORhd6Kvx0aXh16GEKRi7o",
+        "cf_clearance": "8woL3fvfUtoKJB6sT2tdXG4auRO0XqwzsKCfpMHRbZk-1770611470-1.2.1.1-JY96ioz3w_8WZGryzcbBaeAm1ZNJDSE5KP_mRt.fyJeAgI_aGPawtMUjbP_.3MXb8et_66A.6tLZUeIAtBRl4KGxcUwT725yU9jnZg3pAs73xh6.oZAEf7MhPlaQrxjlH8MJ80b5L34YoY4w_dOXmUjhO2iuI3k7eOohDwfWt99RhY6lxPcg.Gor9pEjdMZWaraDCEpU1dgwRU8F0XsxxIdkMy.iA5Kt5C9urry1V6B_zq45Lxpu7eWd8oIBEiwz",
+        "__cf_bm": "mq99rGcR7j9O4YAe5agYRf7ZfRKpOGHSh.0voX6uv5A-1770611461-1.0.1.1-8JSWgrhba9kRCYt.AtHVblBBFrZt0ExnAN3CIF7c.IjzmtXmTD.7VGmFHLvOWyGNUgH0meKH1qPRceCZAZGWBNqucSyX33hNHuIOnz8AXlQ",
+        "i18nextLng": "vi",
+        "_ga": "GA1.1.1822061612.1770611470"
       },
-      "last_login": "2026-02-05T12:18:47.411307",
-      "error_message": null
+      "last_login": "2026-02-09T11:31:58.409643",
+      "error_message": "Email field not found"
+    },
+    {
+      "email": "nhiphamnoi45b2@outlook.com",
+      "password_encrypted": "gAAAAABpiVll6VWIFTWo0QfhfOerhO5gRIHMWfRvPTEY_oVlfLvbw-_3sw6t6pG7ghxLCVEEDVCqAiW65KwkVAg2lGD0AXXXhw==",
+      "fingerprint_id": "e17f3d03-208c-4412-8ff6-0d296f9fec73",
+      "status": "logged_in",
+      "cookies": {
+        "_ga_8FEWB057YH": "GS2.1.s1770609596$o1$g1$t1770609642$j14$l0$h0",
+        "x-userid": "56eba738-3ad4-4a3d-9f6b-94ae007f13f7",
+        "mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel": "%7B%22distinct_id%22%3A%2256eba738-3ad4-4a3d-9f6b-94ae007f13f7%22%2C%22%24device_id%22%3A%224b544962-c36f-4234-b81e-531aab010198%22%2C%22%24initial_referrer%22%3A%22https%3A%2F%2Fgrok.com%2F%3F__cf_chl_tk%3DUuBIHSq1tOZISRTXLgckdGhJWgKNBt6C2OtmT4PLHLY-1770609592-1.0.1.1-TdCDSOThZlttJwT7XGK1vfZSMpYrp0hJg8C_fxF_aXI%22%2C%22%24initial_referring_domain%22%3A%22grok.com%22%2C%22%24user_id%22%3A%2256eba738-3ad4-4a3d-9f6b-94ae007f13f7%22%2C%22__mps%22%3A%7B%7D%2C%22__mpso%22%3A%7B%7D%2C%22__mpus%22%3A%7B%7D%2C%22__mpa%22%3A%7B%7D%2C%22__mpu%22%3A%7B%7D%2C%22__mpr%22%3A%5B%5D%2C%22__mpap%22%3A%5B%5D%7D",
+        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMDZkZGQyZmItOTllYS00MzdlLTgyOGUtOGUxM2IzYjFkNzNmIn0.aq5mXpNZnwUBaGw4o5nZMNEpHEYkwDqUebheLKBNC_Y",
+        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMDZkZGQyZmItOTllYS00MzdlLTgyOGUtOGUxM2IzYjFkNzNmIn0.aq5mXpNZnwUBaGw4o5nZMNEpHEYkwDqUebheLKBNC_Y",
+        "__cf_bm": "IQOJys.ygiQl6FMts_YQj5zM14YWmgSP0IZk_R2Myl4-1770609069-1.0.1.1-GxdPRARDzJu9r4fDHTnkl9_Q2QnUyNjxp8pxhmL0jXT6b8l27cuH_oRz0Ko85qdZL0mwfAwSI0r44GsdQpj_zUCNeluX3kWTrPNMJrbXJKA",
+        "i18nextLng": "vi",
+        "cf_clearance": "7h5J9r76GmYiNVNmQ__Tz98jwD9icrqrBPl6bCZ_qRg-1770609596-1.2.1.1-BeprLsPNqW7SQI1U3w.RoggAb6JQqyQppijE73D_BTyomhhJYSpYioO3pbPnJUpDLDn3Occ3C1Pz0W7c.ZKGMB9OKSomt59s7vaWLZuQR6MyC515U2fdOLOy.HWiQoXcT8r_HPg51EvliSxRg454gm3mmUfj.himmo7yqhY3GJxGpJyksdisXWjeaxV7OoxN5NW2d3E8Njqqn2OEMmZcFV2_7tgYKMbHQXx.BG7HbRu2r.Hh2nHf7VOF4MER50Ox",
+        "_ga": "GA1.1.96142967.1770609597"
+      },
+      "last_login": "2026-02-09T11:00:43.320824",
+      "error_message": "Email field not found"
     }
   ]
 }

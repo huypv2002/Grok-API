@@ -1,5 +1,7 @@
-"""Video Generation Tab - Clean Modern UI with Multi-Tab Support"""
+"""Video Generation Tab - Clean Modern UI with Multi-Tab Support + Image-to-Video"""
 import json
+import re
+import os
 import asyncio
 from pathlib import Path
 from datetime import datetime
@@ -7,14 +9,23 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QTextEdit, QComboBox, QPushButton, QMessageBox, QCheckBox, QSpinBox,
     QFileDialog, QLabel, QTableWidget, QTableWidgetItem, QLineEdit,
-    QHeaderView, QSplitter, QFrame, QTabWidget, QProgressBar, QScrollArea
+    QHeaderView, QSplitter, QFrame, QTabWidget, QProgressBar, QScrollArea,
+    QButtonGroup, QRadioButton, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Signal, QThread, Qt, QTimer, QTime
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Signal, QThread, Qt, QTimer, QTime, QSize
+from PySide6.QtGui import QColor, QFont, QPixmap, QIcon, QPixmap, QIcon
 from ..core.account_manager import AccountManager
 from ..core.video_generator import VideoGenerator, MultiTabVideoGenerator, ZENDRIVER_AVAILABLE
 from ..core.history_manager import HistoryManager
 from ..core.models import VideoSettings
+
+
+def natural_sort_key(s):
+    """Natural sort key: '2.jpg' < '10.jpg' (not lexicographic)"""
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(s))]
+
+
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'}
 
 SETTINGS_FILE = Path("data/settings.json")
 DEFAULT_OUTPUT_DIR = Path("output")
@@ -24,15 +35,20 @@ class AccountWorker(QThread):
     """
     Worker for a single account with multi-tab support.
     1 browser per account, 3 tabs running concurrently.
+    Supports both text-to-video and image-to-video.
     """
     status_update = Signal(str, str)  # email, message
     task_completed = Signal(str, object)  # email, VideoTask
     all_finished = Signal(str)  # email
     
     def __init__(self, account, prompts, settings, num_tabs=3, headless=True):
+        """
+        Args:
+            prompts: List[str] (text mode) or List[Tuple[str, Optional[str]]] (prompt, image_path)
+        """
         super().__init__()
         self.account = account
-        self.prompts = prompts
+        self.prompts = prompts  # can be str list or tuple list
         self.settings = settings
         self.num_tabs = num_tabs
         self.headless = headless
@@ -210,6 +226,10 @@ class VideoGenTab(QWidget):
         self.account_prompts: dict = {}  # email -> list of prompts
         self.account_prompt_idx: dict = {}  # email -> current index in queue table
         
+        # Track which tab is currently processing which queue index
+        # key: "email:tab_num" -> queue_idx
+        self.tab_current_idx: dict = {}
+        
         # Output folder & batch tracking
         self._output_dir = str(DEFAULT_OUTPUT_DIR)
         self._current_batch_name = ""  # subfolder name (from TXT filename)
@@ -326,15 +346,36 @@ class VideoGenTab(QWidget):
         left_layout.setContentsMargins(15, 15, 15, 15)
         left_layout.setSpacing(10)
         
-        # Prompt
+        # === Mode selector: Text→Video / Image→Video ===
+        self._gen_mode = "text"  # "text" or "image"
+        
+        mode_row = QHBoxLayout()
+        self.mode_text_btn = QPushButton("📝 Text → Video")
+        self.mode_image_btn = QPushButton("🖼️ Image → Video")
+        self.mode_text_btn.setCheckable(True)
+        self.mode_image_btn.setCheckable(True)
+        self.mode_text_btn.setChecked(True)
+        self.mode_text_btn.clicked.connect(lambda: self._switch_mode("text"))
+        self.mode_image_btn.clicked.connect(lambda: self._switch_mode("image"))
+        mode_row.addWidget(self.mode_text_btn)
+        mode_row.addWidget(self.mode_image_btn)
+        left_layout.addLayout(mode_row)
+        
+        # === TEXT MODE: Prompt input ===
+        self.text_mode_widget = QWidget()
+        self.text_mode_widget.setStyleSheet("background: transparent;")
+        text_layout = QVBoxLayout(self.text_mode_widget)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(8)
+        
         self.prompt_title = QLabel("📝 Prompts")
         self.prompt_title.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        left_layout.addWidget(self.prompt_title)
+        text_layout.addWidget(self.prompt_title)
         
         self.prompt_input = QTextEdit()
         self.prompt_input.setPlaceholderText("Nhập prompt (mỗi dòng 1 prompt)...")
         self.prompt_input.setMaximumHeight(120)
-        left_layout.addWidget(self.prompt_input)
+        text_layout.addWidget(self.prompt_input)
         
         btn_row = QHBoxLayout()
         self.import_btn = QPushButton("📄 Nhập TXT")
@@ -348,7 +389,54 @@ class VideoGenTab(QWidget):
         btn_row.addWidget(self.import_btn)
         btn_row.addWidget(self.import_folder_btn)
         btn_row.addWidget(self.clear_btn)
-        left_layout.addLayout(btn_row)
+        text_layout.addLayout(btn_row)
+        
+        left_layout.addWidget(self.text_mode_widget)
+        
+        # === IMAGE MODE: Folder + TXT pairs ===
+        self.image_mode_widget = QWidget()
+        self.image_mode_widget.setStyleSheet("background: transparent;")
+        self.image_mode_widget.setVisible(False)
+        img_layout = QVBoxLayout(self.image_mode_widget)
+        img_layout.setContentsMargins(0, 0, 0, 0)
+        img_layout.setSpacing(8)
+        
+        img_title = QLabel("🖼️ Ảnh + Prompt")
+        img_title.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        img_layout.addWidget(img_title)
+        self._img_title_label = img_title
+        
+        img_desc = QLabel("Mỗi cặp: 1 folder ảnh + 1 file TXT prompt\nẢnh sắp xếp tự nhiên (1, 2, ..., 10)\nDòng 1 TXT → Ảnh 1, Dòng 2 → Ảnh 2...")
+        img_desc.setFont(QFont("Segoe UI", 9))
+        img_desc.setWordWrap(True)
+        img_layout.addWidget(img_desc)
+        self._img_desc_label = img_desc
+        
+        # Pair list
+        self.pair_list = QListWidget()
+        self.pair_list.setMaximumHeight(100)
+        self.pair_list.setToolTip("Danh sách cặp Folder + TXT")
+        img_layout.addWidget(self.pair_list)
+        
+        pair_btn_row = QHBoxLayout()
+        self.add_pair_btn = QPushButton("➕ Thêm cặp")
+        self.remove_pair_btn = QPushButton("🗑️ Xóa cặp")
+        self.add_pair_btn.clicked.connect(self._add_image_pair)
+        self.remove_pair_btn.clicked.connect(self._remove_image_pair)
+        pair_btn_row.addWidget(self.add_pair_btn)
+        pair_btn_row.addWidget(self.remove_pair_btn)
+        img_layout.addLayout(pair_btn_row)
+        
+        # Summary
+        self.pair_summary = QLabel("")
+        self.pair_summary.setFont(QFont("Segoe UI", 9))
+        self.pair_summary.setWordWrap(True)
+        img_layout.addWidget(self.pair_summary)
+        
+        left_layout.addWidget(self.image_mode_widget)
+        
+        # Store image pairs: list of (folder_path, txt_path, images_list, prompts_list)
+        self._image_pairs = []
         
         # Output folder
         self.output_title = QLabel("📂 Thư mục xuất:")
@@ -468,11 +556,13 @@ class VideoGenTab(QWidget):
         queue_l = QVBoxLayout(queue_w)
         queue_l.setContentsMargins(5, 5, 5, 5)
         self.queue_table = QTableWidget()
-        self.queue_table.setColumnCount(3)
-        self.queue_table.setHorizontalHeaderLabels(["#", "Prompt", "Trạng thái"])
+        self.queue_table.setColumnCount(4)
+        self.queue_table.setHorizontalHeaderLabels(["#", "Prompt", "Ảnh", "Trạng thái"])
         self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.queue_table.setColumnWidth(0, 35)
-        self.queue_table.setColumnWidth(2, 90)
+        self.queue_table.setColumnWidth(2, 50)
+        self.queue_table.setColumnWidth(3, 90)
+        self.queue_table.setIconSize(QSize(40, 40))
         queue_l.addWidget(self.queue_table)
         self.tabs.addTab(queue_w, "📋 Hàng đợi")
         
@@ -731,8 +821,50 @@ class VideoGenTab(QWidget):
         for tbl in [self.acc_table, self.queue_table, self.run_table, self.done_table]:
             tbl.setStyleSheet(table_style)
         
-        for btn in [self.import_btn, self.import_folder_btn, self.clear_btn]:
+        # Pair list (image mode) styling
+        if self.is_dark:
+            self.pair_list.setStyleSheet("""
+                QListWidget {
+                    background: rgba(20, 30, 50, 180);
+                    color: white;
+                    border: 1px solid rgba(80, 120, 200, 50);
+                    border-radius: 6px;
+                    padding: 4px;
+                }
+                QListWidget::item { padding: 4px 6px; }
+                QListWidget::item:selected { background: rgba(80, 120, 200, 100); }
+            """)
+        else:
+            self.pair_list.setStyleSheet("""
+                QListWidget {
+                    background: white;
+                    color: #333;
+                    border: 1px solid rgba(100, 150, 200, 80);
+                    border-radius: 6px;
+                    padding: 4px;
+                }
+                QListWidget::item { padding: 4px 6px; }
+                QListWidget::item:selected { background: rgba(80, 120, 200, 100); }
+            """)
+        
+        for btn in [self.import_btn, self.import_folder_btn, self.clear_btn,
+                    self.add_pair_btn, self.remove_pair_btn]:
             btn.setStyleSheet(btn_style)
+        
+        # Mode buttons styling
+        mode_active = """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3498db, stop:1 #2980b9);
+                color: white; border: none; border-radius: 6px; padding: 8px 12px; font-weight: bold;
+            }
+        """
+        mode_inactive = btn_style
+        self.mode_text_btn.setStyleSheet(mode_active if self._gen_mode == "text" else mode_inactive)
+        self.mode_image_btn.setStyleSheet(mode_active if self._gen_mode == "image" else mode_inactive)
+        
+        # Image mode labels
+        for lbl in [self._img_title_label, self._img_desc_label, self.pair_summary]:
+            lbl.setStyleSheet(f"color: {text_color}; background: transparent;")
         
         self.output_input.setStyleSheet(f"""
             QLineEdit {{
@@ -845,6 +977,112 @@ class VideoGenTab(QWidget):
             """)
 
     
+    # ==================== Mode Switching ====================
+    
+    def _switch_mode(self, mode):
+        """Switch between text and image mode"""
+        self._gen_mode = mode
+        self.mode_text_btn.setChecked(mode == "text")
+        self.mode_image_btn.setChecked(mode == "image")
+        self.text_mode_widget.setVisible(mode == "text")
+        self.image_mode_widget.setVisible(mode == "image")
+        # Hide aspect ratio in image mode (post page doesn't have it)
+        self.ratio_label.setVisible(mode == "text")
+        self.aspect_combo.setVisible(mode == "text")
+        # Update mode button styling (active/inactive)
+        self._apply_theme()
+    
+    # ==================== Image Pair Management ====================
+    
+    def _add_image_pair(self):
+        """Add a folder + TXT pair for image-to-video"""
+        # Step 1: Select image folder
+        folder = QFileDialog.getExistingDirectory(self, "Chọn folder chứa ảnh")
+        if not folder:
+            return
+        
+        # Find images with natural sort
+        images = []
+        for f in Path(folder).iterdir():
+            if f.suffix.lower() in IMAGE_EXTENSIONS and f.is_file():
+                images.append(f)
+        images.sort(key=lambda f: natural_sort_key(f.name))
+        
+        if not images:
+            QMessageBox.warning(self, "Lỗi", f"Không tìm thấy ảnh trong:\n{folder}")
+            return
+        
+        # Step 2: Select TXT file
+        txt_path, _ = QFileDialog.getOpenFileName(self, "Chọn file TXT prompt", "", "Text (*.txt)")
+        if not txt_path:
+            return
+        
+        try:
+            with open(txt_path, 'r', encoding='utf-8') as f:
+                prompts = [l.strip() for l in f if l.strip()]
+        except Exception as e:
+            QMessageBox.warning(self, "Lỗi", f"Không đọc được file TXT:\n{e}")
+            return
+        
+        if not prompts:
+            QMessageBox.warning(self, "Lỗi", "File TXT rỗng")
+            return
+        
+        # Validate: number of images vs prompts
+        n_img = len(images)
+        n_prompt = len(prompts)
+        if n_img != n_prompt:
+            reply = QMessageBox.question(
+                self, "Số lượng không khớp",
+                f"Folder có {n_img} ảnh, TXT có {n_prompt} dòng.\n"
+                f"Sẽ dùng {min(n_img, n_prompt)} cặp (bỏ phần dư).\n\nTiếp tục?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+        
+        count = min(n_img, n_prompt)
+        images = images[:count]
+        prompts = prompts[:count]
+        
+        # Store pair
+        self._image_pairs.append((folder, txt_path, images, prompts))
+        
+        # Update list widget
+        folder_name = Path(folder).name
+        txt_name = Path(txt_path).name
+        self.pair_list.addItem(f"📁 {folder_name} + 📄 {txt_name} ({count} cặp)")
+        
+        self._update_pair_summary()
+        self._log(f"✅ Thêm cặp: {folder_name} + {txt_name} ({count} ảnh)")
+    
+    def _remove_image_pair(self):
+        """Remove selected pair"""
+        row = self.pair_list.currentRow()
+        if row >= 0 and row < len(self._image_pairs):
+            self._image_pairs.pop(row)
+            self.pair_list.takeItem(row)
+            self._update_pair_summary()
+    
+    def _update_pair_summary(self):
+        """Update summary label"""
+        total = sum(len(imgs) for _, _, imgs, _ in self._image_pairs)
+        n_pairs = len(self._image_pairs)
+        if n_pairs > 0:
+            self.pair_summary.setText(f"📊 {n_pairs} cặp, tổng {total} video")
+        else:
+            self.pair_summary.setText("")
+    
+    def _get_image_prompts(self):
+        """Get all (prompt, image_path) tuples from image pairs, in order"""
+        result = []
+        for folder, txt, images, prompts in self._image_pairs:
+            for img, prompt in zip(images, prompts):
+                result.append((prompt, str(img)))
+        return result
+    
+    # ==================== Account & Settings ====================
+    
     def refresh_accounts(self):
         accounts = self.account_manager.get_all_accounts()
         self.acc_table.setRowCount(len(accounts))
@@ -909,33 +1147,59 @@ class VideoGenTab(QWidget):
             self._log(f"📂 Output: {folder}")
 
     def _start(self):
-        """Start multi-tab video generation"""
-        text = self.prompt_input.toPlainText().strip()
-        if not text:
-            QMessageBox.warning(self, "Lỗi", "Nhập prompt trước")
-            return
+        """Start multi-tab video generation (text or image mode)"""
+        # Build prompt list based on mode
+        if self._gen_mode == "image":
+            # Image mode: get (prompt, image_path) tuples
+            all_items = self._get_image_prompts()
+            if not all_items:
+                QMessageBox.warning(self, "Lỗi", "Thêm ít nhất 1 cặp Folder + TXT")
+                return
+        else:
+            # Text mode: get prompts from text input
+            text = self.prompt_input.toPlainText().strip()
+            if not text:
+                QMessageBox.warning(self, "Lỗi", "Nhập prompt trước")
+                return
+            prompts = [p.strip() for p in text.split('\n') if p.strip()]
+            all_items = [(p, None) for p in prompts]  # (prompt, None) for text mode
         
-        prompts = [p.strip() for p in text.split('\n') if p.strip()]
         accounts = self._get_selected_accounts()
-        
         if not accounts:
             QMessageBox.warning(self, "Lỗi", "Chọn tài khoản đã đăng nhập")
             return
         
+        total = len(all_items)
+        
         # Reset state
-        self.prompt_queue = prompts
+        self.prompt_queue = all_items  # list of (prompt, image_path_or_none)
         self.completed_prompts = []
         self.failed_prompts = []
         self.current_idx = 0
         self.account_prompts = {}
         self.account_prompt_idx = {}
+        self.tab_current_idx = {}
         
-        # Setup queue table
-        self.queue_table.setRowCount(len(prompts))
-        for i, p in enumerate(prompts):
+        # Setup queue table — 4 columns: #, Prompt, Ảnh, Trạng thái
+        self.queue_table.setRowCount(total)
+        for i, (prompt, img_path) in enumerate(all_items):
             self.queue_table.setItem(i, 0, QTableWidgetItem(str(i+1)))
-            self.queue_table.setItem(i, 1, QTableWidgetItem(p[:50]))
-            self.queue_table.setItem(i, 2, QTableWidgetItem("⏳ Chờ"))
+            self.queue_table.setItem(i, 1, QTableWidgetItem(prompt[:50]))
+            # Thumbnail ảnh nhỏ thay vì text
+            if img_path and os.path.exists(img_path):
+                pix = QPixmap(img_path)
+                if not pix.isNull():
+                    thumb = pix.scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    img_item = QTableWidgetItem()
+                    img_item.setIcon(QIcon(thumb))
+                    img_item.setToolTip(os.path.basename(img_path))
+                    self.queue_table.setItem(i, 2, img_item)
+                    self.queue_table.setRowHeight(i, 46)
+                else:
+                    self.queue_table.setItem(i, 2, QTableWidgetItem(os.path.basename(img_path)[:10]))
+            else:
+                self.queue_table.setItem(i, 2, QTableWidgetItem(""))
+            self.queue_table.setItem(i, 3, QTableWidgetItem("⏳ Chờ"))
         
         self.run_table.setRowCount(0)
         self.done_table.setRowCount(0)
@@ -944,42 +1208,57 @@ class VideoGenTab(QWidget):
         self.stop_btn.setEnabled(True)
         
         # Reset progress bar
-        self.progress_bar.setRange(0, len(prompts))
+        self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(0)
-        self.progress_status.setText("🚀 Đang khởi tạo...")
-        self.progress_percent.setText(f"0/{len(prompts)} — 0%")
+        mode_label = "Image→Video" if self._gen_mode == "image" else "Text→Video"
+        self.progress_status.setText(f"🚀 Đang khởi tạo ({mode_label})...")
+        self.progress_percent.setText(f"0/{total} — 0%")
         self.progress_detail.setText("")
         self._start_time = QTime.currentTime()
         self._elapsed_timer.start(1000)
         
         num_tabs = self.thread_spin.value()
         
-        # Distribute prompts across accounts
-        # Each account gets prompts in round-robin fashion
-        for i, acc in enumerate(accounts):
-            self.account_prompts[acc.email] = []
-            self.account_prompt_idx[acc.email] = []
+        # Distribute items: chia block liên tục cho mỗi account, KHÔNG có gap
+        # VD: 12 items, 3 accounts → acc0: [0,1,2,3], acc1: [4,5,6,7], acc2: [8,9,10,11]
+        n_acc = len(accounts)
+        base_count = total // n_acc
+        remainder = total % n_acc
         
-        for idx, prompt in enumerate(prompts):
-            acc_idx = idx % len(accounts)
-            acc = accounts[acc_idx]
-            self.account_prompts[acc.email].append(prompt)
-            self.account_prompt_idx[acc.email].append(idx)
+        offset = 0
+        for i, acc in enumerate(accounts):
+            count = base_count + (1 if i < remainder else 0)
+            self.account_prompts[acc.email] = all_items[offset:offset + count]
+            self.account_prompt_idx[acc.email] = list(range(offset, offset + count))
+            offset += count
         
         total_concurrent = len(accounts) * num_tabs
-        self._log(f"🚀 Starting {len(prompts)} prompts")
+        self._log(f"🚀 Starting {total} videos ({mode_label})")
         self._log(f"   {len(accounts)} accounts × {num_tabs} tabs = {total_concurrent} concurrent")
+        for acc in accounts:
+            idx_list = self.account_prompt_idx[acc.email]
+            if idx_list:
+                self._log(f"   [{acc.email[:20]}] #{idx_list[0]+1} → #{idx_list[-1]+1} ({len(idx_list)} items)")
         
-        # Start one AccountWorker per account
+        # Start one AccountWorker per account — stagger 5s
+        self._pending_accounts = []
         for acc in accounts:
             if self.account_prompts[acc.email]:
-                self._start_account_worker(acc, num_tabs)
+                self._pending_accounts.append((acc, num_tabs))
+        
+        if self._pending_accounts:
+            acc, tabs = self._pending_accounts.pop(0)
+            self._start_account_worker(acc, tabs)
+            
+            for i, (acc, tabs) in enumerate(self._pending_accounts):
+                QTimer.singleShot((i + 1) * 5000, lambda a=acc, t=tabs: self._start_account_worker(a, t))
+            self._pending_accounts = []
     
     def _start_account_worker(self, account, num_tabs):
         """Start a multi-tab worker for an account"""
-        prompts = self.account_prompts[account.email]
+        items = self.account_prompts[account.email]  # list of (prompt, image_path) or (prompt, None)
         
-        if not prompts:
+        if not items:
             return
         
         aspect = self.aspect_combo.currentText()
@@ -987,22 +1266,17 @@ class VideoGenTab(QWidget):
         resolution = self.resolution_combo.currentText()
         settings = VideoSettings(aspect_ratio=aspect, video_length=length, resolution=resolution)
         
-        # Mark prompts as running
-        for idx in self.account_prompt_idx[account.email]:
-            if idx < self.queue_table.rowCount():
-                self.queue_table.setItem(idx, 2, QTableWidgetItem("🔄 Đợi"))
-                self.queue_table.item(idx, 2).setBackground(QColor("#f39c12"))
-        
         # Add to running table
         row = self.run_table.rowCount()
         self.run_table.insertRow(row)
         self.run_table.setItem(row, 0, QTableWidgetItem(account.email))
-        self.run_table.setItem(row, 1, QTableWidgetItem(f"{len(prompts)} prompts"))
+        idx_list = self.account_prompt_idx[account.email]
+        self.run_table.setItem(row, 1, QTableWidgetItem(f"#{idx_list[0]+1}→#{idx_list[-1]+1} ({len(items)} items)"))
         self.run_table.setItem(row, 2, QTableWidgetItem(f"Khởi tạo {num_tabs} tab..."))
         
-        # Create and start worker
+        # Create and start worker — pass items directly (tuples supported by generate_batch)
         worker = AccountWorker(
-            account, prompts, settings,
+            account, items, settings,
             num_tabs=num_tabs,
             headless=True
         )
@@ -1013,43 +1287,53 @@ class VideoGenTab(QWidget):
         self.account_workers[account.email] = worker
         worker.start()
         
-        self._log(f"▶️ [{account.email}] {len(prompts)} prompts, {num_tabs} tabs")
+        self._log(f"▶️ [{account.email}] #{idx_list[0]+1}→#{idx_list[-1]+1} ({len(items)} items), {num_tabs} tabs")
     
     def _on_account_status(self, email, msg):
-        """Handle status update from account worker"""
-        # Update running table
+        """Handle status update from account worker.
+        
+        Quy tắc:
+        - Browser-level messages (không có [TabN]): chỉ update running table
+        - Tab-level messages (có [TabN]): update queue table cho prompt đang xử lý
+        """
+        import re
+        
+        # Update running table — luôn luôn
         for i in range(self.run_table.rowCount()):
             if self.run_table.item(i, 0) and self.run_table.item(i, 0).text() == email:
-                # Extract short message
                 short_msg = msg.split(']')[-1].strip()[:40] if ']' in msg else msg[:40]
                 self.run_table.setItem(i, 2, QTableWidgetItem(short_msg))
                 break
         
-        # Update queue table status for current account's prompts
-        self._update_queue_status_from_msg(email, msg)
+        # Check if tab-level message
+        tab_match = re.search(r'\[Tab(\d+)\]', msg)
         
-        # Update progress status text based on step keywords
-        if any(kw in msg for kw in ['Starting', 'Khởi tạo', '🚀']):
-            self.progress_status.setText("🚀 Đang khởi tạo browser...")
-        elif any(kw in msg for kw in ['Cloudflare', '🔐', 'cf_clearance']):
-            self.progress_status.setText("� Đang giải Cloudflare...")
-        elif any(kw in msg for kw in ['🍪', 'cookie', 'Injecting']):
-            self.progress_status.setText("🍪 Đang thiết lập session...")
-        elif any(kw in msg for kw in ['Video mode', '🎬', 'Selecting']):
-            self.progress_status.setText("� Đang chọn chế độ Video...")
-        elif any(kw in msg for kw in ['prompt', '✏️', 'Entering']):
-            self.progress_status.setText("✏️ Đang nhập prompt...")
-        elif any(kw in msg for kw in ['Submit', '📤']):
+        if tab_match:
+            # Tab-level → update queue table
+            self._update_queue_from_tab_msg(email, msg, tab_match)
+        
+        # Update progress status bar (global)
+        if any(kw in msg for kw in ['Cloudflare', '🔐', 'cf_clearance']):
+            self.progress_status.setText(f"🔐 [{email[:15]}] Giải Cloudflare...")
+        elif any(kw in msg for kw in ['Browser ready', '✅ Browser']):
+            self.progress_status.setText(f"✅ [{email[:15]}] Browser sẵn sàng")
+        elif '📤' in msg:
             self.progress_status.setText("📤 Đang gửi yêu cầu...")
-        elif any(kw in msg for kw in ['Waiting', '⏳', 'Rendering', 'post ID']):
+        elif '⏳' in msg and 'Rendering' in msg:
             self.progress_status.setText("⏳ Đang tạo video...")
-        elif any(kw in msg for kw in ['Download', '📥', 'Tải']):
+        elif '📥' in msg:
             self.progress_status.setText("📥 Đang tải video...")
-        elif any(kw in msg for kw in ['share', '�']):
-            self.progress_status.setText("� Đang tạo link chia sẻ...")
     
-    def _update_queue_status_from_msg(self, email, msg):
-        """Update queue table status based on worker message"""
+    def _update_queue_from_tab_msg(self, email, msg, tab_match):
+        """Update queue table from a tab-specific message.
+        
+        Logic:
+        1. Khi thấy "Starting: <prompt>..." → map tab_key → queue_idx bằng prompt text
+        2. Các message sau đó update queue_idx đã map
+        3. Prompt chưa được tab nào pick → giữ "⏳ Chờ"
+        """
+        import re
+        
         if email not in self.account_prompt_idx:
             return
         
@@ -1057,120 +1341,114 @@ class VideoGenTab(QWidget):
         if not indices:
             return
         
-        # Parse Tab ID from message like "[Tab1]", "[Tab2]", "[Tab3]"
-        import re
-        tab_match = re.search(r'\[Tab(\d+)\]', msg)
+        tab_num = int(tab_match.group(1)) - 1
+        tab_key = f"{email}:{tab_num}"
         
-        if tab_match:
-            # Message has Tab ID - update specific prompt based on tab
-            tab_num = int(tab_match.group(1)) - 1  # Tab1 = index 0
-            if tab_num < len(indices):
-                idx = indices[tab_num]
-            else:
-                return
-        else:
-            # No Tab ID (browser-level message) - update all pending prompts
-            # Determine status based on message keywords
-            status_text = None
-            status_color = None
-            
-            if any(kw in msg for kw in ['Starting', '🚀', 'browser']):
-                status_text = "🚀 Khởi tạo"
-                status_color = "#3498db"
-            elif any(kw in msg for kw in ['Cloudflare', '🔐', 'cf_']):
-                status_text = "🔐 CF Check"
-                status_color = "#9b59b6"
-            elif any(kw in msg for kw in ['🍪', 'cookie', 'Inject']):
-                status_text = "🍪 Session"
-                status_color = "#e67e22"
-            elif any(kw in msg for kw in ['Browser ready', '✅ Browser']):
-                status_text = "✅ Sẵn sàng"
-                status_color = "#27ae60"
-            
-            if status_text:
-                # Update all prompts for this account
-                for idx in indices:
-                    if idx < self.queue_table.rowCount():
-                        item = QTableWidgetItem(status_text)
-                        if status_color:
-                            item.setBackground(QColor(status_color))
-                            item.setForeground(QColor("white"))
-                        self.queue_table.setItem(idx, 2, item)
+        # Detect "Starting:" → map tab to prompt by matching text
+        start_match = re.search(r'(?:Starting|Retrying[^:]*): (.+?)\.\.\.', msg)
+        if start_match:
+            prompt_prefix = start_match.group(1).strip()[:20]
+            for qi in indices:
+                if qi < self.queue_table.rowCount():
+                    queue_item = self.queue_table.item(qi, 1)
+                    if queue_item and queue_item.text()[:20] == prompt_prefix:
+                        self.tab_current_idx[tab_key] = qi
+                        break
+        
+        # Get mapped queue index
+        idx = self.tab_current_idx.get(tab_key)
+        if idx is None or idx >= self.queue_table.rowCount():
             return
         
-        # Tab-specific message - update only that prompt
-        if idx >= self.queue_table.rowCount():
+        # Don't overwrite completed/failed status
+        current_status = self.queue_table.item(idx, 3)
+        if current_status and current_status.text() in ('✅ Xong', '❌ Lỗi'):
             return
         
-        # Determine status based on message keywords
+        # Map message → status
         status_text = None
         status_color = None
         
         if any(kw in msg for kw in ['▶️ Starting', 'Starting:']):
             status_text = "▶️ Bắt đầu"
             status_color = "#3498db"
-        elif any(kw in msg for kw in ['Video mode', '🎬', 'Selecting']):
+        elif '🎬' in msg:
             status_text = "🎬 Chọn mode"
             status_color = "#1abc9c"
-        elif any(kw in msg for kw in ['⚙️', 'Applying settings']):
+        elif '⚙️' in msg:
             status_text = "⚙️ Cài đặt"
             status_color = "#9b59b6"
-        elif any(kw in msg for kw in ['prompt', '✏️', 'Entering']):
+        elif '✏️' in msg:
             status_text = "✏️ Nhập prompt"
             status_color = "#3498db"
-        elif any(kw in msg for kw in ['Submit', '📤']):
+        elif '📤' in msg:
             status_text = "📤 Gửi"
             status_color = "#f39c12"
-        elif any(kw in msg for kw in ['post ID', 'Post ID', '✅ Post']):
-            status_text = "🆔 Có Post ID"
+        elif '✅ Post ID' in msg or '🆔' in msg:
+            status_text = "🆔 Post ID"
             status_color = "#2ecc71"
-        elif any(kw in msg for kw in ['Rendering', 'render', '⏳']):
-            # Extract time if available
+        elif 'Rendering' in msg or ('⏳' in msg and 'render' in msg.lower()):
             time_match = re.search(r'\((\d+)s\)', msg)
-            if time_match:
-                status_text = f"⏳ {time_match.group(1)}s"
-            else:
-                status_text = "⏳ Rendering"
+            status_text = f"⏳ {time_match.group(1)}s" if time_match else "⏳ Rendering"
             status_color = "#f39c12"
-        elif any(kw in msg for kw in ['share', '🔗']):
+        elif '⏳' in msg and 'video' in msg.lower():
+            status_text = "⏳ Chờ render"
+            status_color = "#f39c12"
+        elif '🔗' in msg:
             status_text = "🔗 Share"
             status_color = "#9b59b6"
-        elif any(kw in msg for kw in ['Download', '📥', 'Downloading']):
+        elif '📥' in msg:
             status_text = "📥 Tải xuống"
             status_color = "#3498db"
-        elif any(kw in msg for kw in ['✅ Downloaded', '✅ Done']):
+        elif '✅ Downloaded' in msg:
             status_text = "✅ Xong"
             status_color = "#27ae60"
-        elif any(kw in msg for kw in ['Ready', '🔄 Ready']):
-            status_text = "🔄 Tiếp tục"
-            status_color = "#1abc9c"
+        elif '✅ Done' in msg:
+            status_text = "✅ Xong"
+            status_color = "#27ae60"
+        elif '🔄 Ready' in msg:
+            # Tab finished this prompt, ready for next — don't update queue
+            return
         
         if status_text:
             item = QTableWidgetItem(status_text)
             if status_color:
                 item.setBackground(QColor(status_color))
                 item.setForeground(QColor("white"))
-            self.queue_table.setItem(idx, 2, item)
+            self.queue_table.setItem(idx, 3, item)
     
     def _on_task_completed(self, email, task):
-        """Handle individual task completion"""
-        # Find the queue index for this prompt
+        """Handle individual task completion.
+        
+        Tìm queue index bằng prompt text match (không pop list để tránh index drift).
+        """
+        # Find the queue index for this prompt by text match
         idx = -1
         if email in self.account_prompt_idx:
-            for i, prompt_idx in enumerate(self.account_prompt_idx[email]):
-                if i < len(self.account_prompts.get(email, [])):
-                    if self.account_prompts[email][i] == task.prompt:
-                        idx = prompt_idx
-                        # Remove from tracking
-                        self.account_prompts[email].pop(i)
-                        self.account_prompt_idx[email].pop(i)
-                        break
+            items_list = self.account_prompts.get(email, [])
+            indices_list = self.account_prompt_idx.get(email, [])
+            for i, (item, qi) in enumerate(zip(items_list, indices_list)):
+                # item can be (prompt, image) tuple or str
+                p = item[0] if isinstance(item, tuple) else item
+                if p == task.prompt:
+                    idx = qi
+                    break
         
-        # Update queue table
+        # Fallback: search queue table by prompt text
+        if idx < 0:
+            for qi in range(self.queue_table.rowCount()):
+                queue_item = self.queue_table.item(qi, 1)
+                if queue_item and queue_item.text() == task.prompt[:50]:
+                    idx = qi
+                    break
+        
+        # Update queue table (status is column 3 now)
         if idx >= 0 and idx < self.queue_table.rowCount():
             if task.status == "completed":
-                self.queue_table.setItem(idx, 2, QTableWidgetItem("✅ Xong"))
-                self.queue_table.item(idx, 2).setBackground(QColor("#27ae60"))
+                item = QTableWidgetItem("✅ Xong")
+                item.setBackground(QColor("#27ae60"))
+                item.setForeground(QColor("white"))
+                self.queue_table.setItem(idx, 3, item)
                 self.completed_prompts.append(task)
                 
                 # Add to done table
@@ -1180,12 +1458,14 @@ class VideoGenTab(QWidget):
                 self.done_table.setItem(row, 1, QTableWidgetItem(task.prompt[:40]))
                 self.done_table.setItem(row, 2, QTableWidgetItem(task.post_id or ""))
                 
-                self._log(f"✅ [{email}] {task.post_id}")
+                self._log(f"✅ [{email[:15]}] #{idx+1} {task.post_id}")
             else:
-                self.queue_table.setItem(idx, 2, QTableWidgetItem("❌ Lỗi"))
-                self.queue_table.item(idx, 2).setBackground(QColor("#e74c3c"))
+                item = QTableWidgetItem("❌ Lỗi")
+                item.setBackground(QColor("#e74c3c"))
+                item.setForeground(QColor("white"))
+                self.queue_table.setItem(idx, 3, item)
                 self.failed_prompts.append(task)
-                self._log(f"❌ [{email}] {task.error_message[:30]}")
+                self._log(f"❌ [{email[:15]}] #{idx+1} {(task.error_message or '')[:30]}")
         
         # Update progress bar
         done_count = len(self.completed_prompts) + len(self.failed_prompts)

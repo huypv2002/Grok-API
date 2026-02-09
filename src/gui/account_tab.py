@@ -21,11 +21,17 @@ class LoginWorker(QThread):
         self.password = password
     
     def run(self):
-        result = self.session_manager.login(
-            self.account, self.password,
-            lambda msg: self.status_update.emit(msg)
-        )
-        self.finished.emit(result)
+        try:
+            result = self.session_manager.login(
+                self.account, self.password,
+                lambda msg: self.status_update.emit(msg)
+            )
+            self.finished.emit(result)
+        except Exception as e:
+            self.status_update.emit(f"❌ Browser error: {e}")
+            self.account.status = "error"
+            self.account.error_message = str(e)
+            self.finished.emit(False)
 
 
 class AccountDialog(QDialog):
