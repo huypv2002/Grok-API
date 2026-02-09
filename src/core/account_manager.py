@@ -48,7 +48,10 @@ class AccountManager:
     def get_password(self, email: str) -> Optional[str]:
         account = self.accounts.get(email)
         if account:
-            return decrypt_password(account.password)
+            try:
+                return decrypt_password(account.password)
+            except ValueError:
+                return None
         return None
     
     def save_to_storage(self) -> None:
@@ -94,9 +97,13 @@ class AccountManager:
         Returns number of accounts exported."""
         entries = []
         for acc in self.accounts.values():
-            plain_pwd = decrypt_password(acc.password)
-            if plain_pwd:
-                entries.append({"email": acc.email, "password": plain_pwd})
+            try:
+                plain_pwd = decrypt_password(acc.password)
+                if plain_pwd:
+                    entries.append({"email": acc.email, "password": plain_pwd})
+            except ValueError:
+                # Key mismatch — skip account
+                continue
         self.TEMP_FILE.parent.mkdir(parents=True, exist_ok=True)
         self.TEMP_FILE.write_text(json.dumps({"accounts": entries}, indent=2, ensure_ascii=False))
         return len(entries)

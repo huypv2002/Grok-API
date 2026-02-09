@@ -488,7 +488,16 @@ class AccountTab(QWidget):
     def _do_login(self, email):
         account = self.account_manager.get_account(email)
         password = self.account_manager.get_password(email)
-        if not account or not password:
+        if not account:
+            return
+        if not password:
+            self._log(f"❌ Không giải mã được password cho {email} — key đã thay đổi. Xóa account và thêm lại.")
+            QMessageBox.warning(
+                self, "Lỗi giải mã",
+                f"Không giải mã được password cho {email}.\n\n"
+                "File data/.key đã thay đổi hoặc bị mất.\n"
+                "Hãy xóa tài khoản này và thêm lại."
+            )
             return
         
         self._log(f"🔑 Logging in {email}...")

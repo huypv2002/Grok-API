@@ -20,4 +20,11 @@ def encrypt_password(password: str) -> str:
     return _get_fernet().encrypt(password.encode()).decode()
 
 def decrypt_password(encrypted: str) -> str:
-    return _get_fernet().decrypt(encrypted.encode()).decode()
+    """Decrypt password. Raises InvalidToken if key mismatch."""
+    try:
+        return _get_fernet().decrypt(encrypted.encode()).decode()
+    except Exception:
+        raise ValueError(
+            "Không thể giải mã password — file data/.key đã thay đổi.\n"
+            "Xóa data/accounts.json và data/.key rồi thêm lại tài khoản."
+        )
