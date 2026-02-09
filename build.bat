@@ -16,7 +16,6 @@ if errorlevel 1 (
 
 :: Get CPU count for max parallel jobs
 for /f "tokens=2 delims==" %%a in ('wmic cpu get NumberOfLogicalProcessors /value ^| find "="') do set CPU_COUNT=%%a
-:: Trim whitespace
 set CPU_COUNT=%CPU_COUNT: =%
 if "%CPU_COUNT%"=="" set CPU_COUNT=4
 echo [INFO] CPU cores: %CPU_COUNT%
@@ -27,6 +26,9 @@ echo [1/4] Cai dat dependencies...
 echo ----------------------------------------
 pip install --upgrade pip wheel setuptools
 pip install -r requirements.txt
+pip install httpcore certifi anyio sniffio h11 idna
+pip install urllib3 charset-normalizer
+pip install cffi pycparser
 pip install nuitka ordered-set zstandard
 if errorlevel 1 (
     echo [ERROR] Cai dat dependencies that bai!
@@ -39,9 +41,9 @@ echo.
 :: Step 2: Verify imports
 echo [2/4] Kiem tra imports...
 echo ----------------------------------------
-python -c "import sys; print(f'Python {sys.version}'); mods=['PySide6','httpx','cryptography','pydantic','selenium','undetected_chromedriver','zendriver','websockets','emoji','grapheme','latest_user_agents','user_agents','setuptools','setuptools._distutils','requests']; fails=[]; [(__import__(m),print(f'  OK: {m}')) if not fails.append(None) or True else None for m in mods]; print('All OK!' if not [f for f in fails if f] else f'FAILED: {fails}')"
+python verify_imports.py
 if errorlevel 1 (
-    echo [ERROR] Import check failed!
+    echo [ERROR] Import check failed! Xem log phia tren.
     pause
     exit /b 1
 )
@@ -86,12 +88,15 @@ python -m nuitka ^
     --include-package=urllib3 ^
     --include-package=charset_normalizer ^
     --include-package=pydantic ^
+    --include-package=pydantic.deprecated ^
     --include-package=cryptography ^
     --include-package=cryptography.hazmat ^
     --include-package=cryptography.hazmat.primitives ^
     --include-package=cryptography.hazmat.backends ^
     --include-package=selenium ^
     --include-package=selenium.webdriver ^
+    --include-package=selenium.webdriver.common ^
+    --include-package=selenium.webdriver.chrome ^
     --include-package=undetected_chromedriver ^
     --include-package=chromedriver_autoinstaller ^
     --include-package=setuptools ^
@@ -101,6 +106,7 @@ python -m nuitka ^
     --include-package=zendriver.core ^
     --include-package=zendriver.cdp ^
     --include-package=websockets ^
+    --include-package=websockets.legacy ^
     --include-package=emoji ^
     --include-package=grapheme ^
     --include-package=latest_user_agents ^
@@ -108,6 +114,9 @@ python -m nuitka ^
     --include-module=_cffi_backend ^
     --include-module=sqlite3 ^
     --include-module=ctypes ^
+    --include-module=platform ^
+    --include-module=hashlib ^
+    --include-module=base64 ^
     --include-package-data=PySide6 ^
     --include-package-data=certifi ^
     --include-package-data=cryptography ^
@@ -115,6 +124,7 @@ python -m nuitka ^
     --include-package-data=zendriver ^
     --include-package-data=emoji ^
     --include-package-data=grapheme ^
+    --include-package-data=charset_normalizer ^
     --include-package-data=selenium ^
     --include-package-data=undetected_chromedriver ^
     --include-package-data=setuptools ^
@@ -138,6 +148,7 @@ python -m nuitka ^
     --nofollow-import-to=test ^
     --nofollow-import-to=unittest ^
     --nofollow-import-to=doctest ^
+    --nofollow-import-to=giaima ^
     --no-pyi-file ^
     --assume-yes-for-downloads ^
     main.py
