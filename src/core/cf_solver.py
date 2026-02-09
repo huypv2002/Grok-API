@@ -202,8 +202,8 @@ class CloudflareSolver:
             
             # Flags chống headless detection trên Windows
             if _CURRENT_OS == "Windows":
+                config.sandbox = False  # zendriver dùng attribute thay vì --no-sandbox
                 config.add_argument("--disable-gpu")
-                config.add_argument("--no-sandbox")
                 config.add_argument("--disable-dev-shm-usage")
                 config.add_argument("--disable-infobars")
                 config.add_argument("--disable-extensions")
