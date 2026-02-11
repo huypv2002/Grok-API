@@ -777,6 +777,8 @@ class MultiTabVideoGenerator:
                 timeout=90,
                 headless=self.headless,
             )
+            # Ensure browser is created in async context
+            await self._solver_helper.ensure_browser()
             self.browser = self._solver_helper.driver
             self.config = self.browser.config if hasattr(self.browser, 'config') else None
             
@@ -798,6 +800,7 @@ class MultiTabVideoGenerator:
                     timeout=90,
                     headless=self.headless,
                 )
+                await self._solver_helper.ensure_browser()
                 self.browser = self._solver_helper.driver
                 await self.browser.start()
                 await self._solver_helper._inject_stealth_patches()
@@ -1450,7 +1453,9 @@ class MultiTabVideoGenerator:
         prompt: str,
         image_path: str,
         settings: VideoSettings,
-        retry_count: int = 0
+        retry_count: int = 0,
+        custom_output_dir: Optional[str] = None,
+        custom_filename: Optional[str] = None
     ) -> VideoTask:
         """
         Image-to-Video flow trên 1 tab:
@@ -1458,8 +1463,9 @@ class MultiTabVideoGenerator:
         2. Upload image → wait redirect → /imagine/post/{uuid}
         3. Fill prompt → Tùy chọn Video → settings → Tạo video
         4. Wait render → share → download
+        Retry toàn bộ flow nếu bất kỳ bước nào thất bại (kể cả download).
         """
-        MAX_RETRIES = 1
+        MAX_RETRIES = 3
         task = VideoTask(
             account_email=self.account.email,
             prompt=prompt,
@@ -1506,7 +1512,7 @@ class MultiTabVideoGenerator:
                     await tab.get(IMAGINE_URL)
                     await asyncio.sleep(2)
                     self.tab_ready[tab_id] = True
-                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1)
+                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1, custom_output_dir, custom_filename)
                 task.status = "failed"
                 task.error_message = "No redirect after upload"
                 self.tab_ready[tab_id] = True
@@ -1542,7 +1548,7 @@ class MultiTabVideoGenerator:
                     await tab.get(IMAGINE_URL)
                     await asyncio.sleep(2)
                     self.tab_ready[tab_id] = True
-                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1)
+                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1, custom_output_dir, custom_filename)
                 task.status = "failed"
                 task.error_message = "Failed to submit on post page"
                 self.tab_ready[tab_id] = True
@@ -1577,7 +1583,7 @@ class MultiTabVideoGenerator:
             
             # Step 7: Wait for video render
             self._log("⏳ Waiting for video render...", tab_id)
-            video_status = await self._wait_for_video_ready_on_tab(tab, tab_id, timeout=300)
+            video_status = await self._wait_for_video_ready_on_tab(tab, tab_id, timeout=150)
             
             if video_status == 'rejected':
                 if retry_count < MAX_RETRIES:
@@ -1585,7 +1591,7 @@ class MultiTabVideoGenerator:
                     await tab.get(IMAGINE_URL)
                     await asyncio.sleep(2)
                     self.tab_ready[tab_id] = True
-                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1)
+                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1, custom_output_dir, custom_filename)
                 task.status = "failed"
                 task.error_message = "Video rejected"
                 self.tab_ready[tab_id] = True
@@ -1597,29 +1603,50 @@ class MultiTabVideoGenerator:
                 await self._click_share_button_on_tab(tab, tab_id)
                 await asyncio.sleep(3)
                 
+                # Download với retry riêng (thử download lại 2 lần trước khi retry toàn bộ flow)
                 self._log("📥 Downloading video...", tab_id)
-                output_path = await self._download_video_on_tab(tab, task, tab_id)
+                output_path = None
+                for dl_attempt in range(3):
+                    output_path = await self._download_video_on_tab(tab, task, tab_id, custom_output_dir, custom_filename)
+                    if output_path:
+                        break
+                    if dl_attempt < 2:
+                        self._log(f"⚠️ Download failed, retrying download ({dl_attempt + 1}/2)...", tab_id)
+                        await asyncio.sleep(3)
+                
                 if output_path:
                     task.output_path = output_path
+                    task.status = "completed"
+                    task.completed_at = datetime.now()
+                    task.user_data_dir = self._user_data_dir
+                    task.account_cookies = self.account.cookies
                     self._log(f"✅ Downloaded: {os.path.basename(output_path)}", tab_id)
+                else:
+                    # Download thất bại sau 3 lần → retry toàn bộ flow
+                    if retry_count < MAX_RETRIES:
+                        self._log(f"❌ Download failed after 3 attempts, retrying full flow ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
+                        await tab.get(IMAGINE_URL)
+                        await asyncio.sleep(2)
+                        self.tab_ready[tab_id] = True
+                        return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1, custom_output_dir, custom_filename)
+                    task.status = "failed"
+                    task.error_message = "Download failed after all retries"
+                    self._log("❌ Download thất bại sau tất cả retries", tab_id)
             elif video_status == 'timeout':
                 if retry_count < MAX_RETRIES:
-                    self._log("⏰ Render timeout, retrying...", tab_id)
+                    self._log(f"⏰ Render timeout, retrying ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
                     await tab.get(IMAGINE_URL)
                     await asyncio.sleep(2)
                     self.tab_ready[tab_id] = True
-                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1)
-                self._log("⚠️ Render timeout, saving for later", tab_id)
+                    return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1, custom_output_dir, custom_filename)
+                task.status = "failed"
+                task.error_message = "Render timeout after all retries"
+                self._log("❌ Render timeout sau tất cả retries", tab_id)
             elif video_status == 'stopped':
                 task.status = "failed"
                 task.error_message = "Generation stopped"
                 self.tab_ready[tab_id] = True
                 return task
-            
-            task.status = "completed"
-            task.completed_at = datetime.now()
-            task.user_data_dir = self._user_data_dir
-            task.account_cookies = self.account.cookies
             
             # Navigate back for next
             self._log("🔄 Ready for next video...", tab_id)
@@ -1629,11 +1656,21 @@ class MultiTabVideoGenerator:
             return task
             
         except Exception as e:
-            task.status = "failed"
-            task.error_message = str(e)
             self._log(f"❌ Error: {e}", tab_id)
             import traceback
             traceback.print_exc()
+            # Retry on unexpected exception
+            if retry_count < MAX_RETRIES:
+                self._log(f"🔄 Retrying after error ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
+                try:
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                except:
+                    pass
+                self.tab_ready[tab_id] = True
+                return await self.generate_image_to_video_on_tab(tab_id, prompt, image_path, settings, retry_count + 1, custom_output_dir, custom_filename)
+            task.status = "failed"
+            task.error_message = str(e)
             self.tab_ready[tab_id] = True
             return task
     
@@ -1644,10 +1681,12 @@ class MultiTabVideoGenerator:
         tab_id: int,
         prompt: str,
         settings: VideoSettings,
-        retry_count: int = 0
+        retry_count: int = 0,
+        custom_output_dir: Optional[str] = None,
+        custom_filename: Optional[str] = None
     ) -> VideoTask:
         """Generate video on a specific tab with retry support"""
-        MAX_RETRIES = 1
+        MAX_RETRIES = 3
         
         task = VideoTask(
             account_email=self.account.email,
@@ -1706,7 +1745,7 @@ class MultiTabVideoGenerator:
                     await tab.get(IMAGINE_URL)
                     await asyncio.sleep(2)
                     self.tab_ready[tab_id] = True
-                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1)
+                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1, custom_output_dir, custom_filename)
                 
                 task.status = "failed"
                 task.error_message = "Could not get post ID"
@@ -1720,7 +1759,7 @@ class MultiTabVideoGenerator:
             
             # Step 6: STAY on post page and wait for video to render
             self._log("⏳ Waiting for video to render...", tab_id)
-            video_status = await self._wait_for_video_ready_on_tab(tab, tab_id, timeout=300)
+            video_status = await self._wait_for_video_ready_on_tab(tab, tab_id, timeout=150)
             
             # Handle rejected video - retry with same prompt
             if video_status == 'rejected':
@@ -1729,7 +1768,7 @@ class MultiTabVideoGenerator:
                     await tab.get(IMAGINE_URL)
                     await asyncio.sleep(2)
                     self.tab_ready[tab_id] = True
-                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1)
+                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1, custom_output_dir, custom_filename)
                 else:
                     task.status = "failed"
                     task.error_message = "Video bị từ chối sau khi thử lại"
@@ -1742,34 +1781,57 @@ class MultiTabVideoGenerator:
                 await self._click_share_button_on_tab(tab, tab_id)
                 await asyncio.sleep(3)
                 
-                # Step 8: Download video immediately
+                # Step 8: Download video — retry download 3 lần trước khi retry toàn bộ flow
                 self._log("📥 Downloading video...", tab_id)
-                output_path = await self._download_video_on_tab(tab, task, tab_id)
+                output_path = None
+                for dl_attempt in range(3):
+                    output_path = await self._download_video_on_tab(tab, task, tab_id, custom_output_dir, custom_filename)
+                    if output_path:
+                        break
+                    if dl_attempt < 2:
+                        self._log(f"⚠️ Download failed, retrying download ({dl_attempt + 1}/2)...", tab_id)
+                        await asyncio.sleep(3)
+                
                 if output_path:
                     task.output_path = output_path
+                    task.status = "completed"
+                    task.completed_at = datetime.now()
+                    task.user_data_dir = self._user_data_dir
+                    task.account_cookies = self.account.cookies
                     self._log(f"✅ Downloaded: {os.path.basename(output_path)}", tab_id)
+                else:
+                    # Download thất bại → retry toàn bộ generation flow
+                    if retry_count < MAX_RETRIES:
+                        self._log(f"❌ Download failed after 3 attempts, retrying full flow ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
+                        await tab.get(IMAGINE_URL)
+                        await asyncio.sleep(2)
+                        self.tab_ready[tab_id] = True
+                        return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1, custom_output_dir, custom_filename)
+                    task.status = "failed"
+                    task.error_message = "Download failed after all retries"
+                    self._log("❌ Download thất bại sau tất cả retries", tab_id)
             elif video_status == 'timeout':
                 # RETRY on timeout: refresh tab and regenerate
                 if retry_count < MAX_RETRIES:
-                    self._log(f"⏰ Render timeout (>300s), retrying ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
+                    self._log(f"⏰ Render timeout (>150s), retrying ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
                     await tab.get(IMAGINE_URL)
                     await asyncio.sleep(2)
                     self.tab_ready[tab_id] = True
-                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1)
+                    return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1, custom_output_dir, custom_filename)
                 else:
-                    self._log("⚠️ Video render timeout after retries, saving for later download", tab_id)
+                    task.status = "failed"
+                    task.error_message = "Render timeout after all retries"
+                    self._log("❌ Render timeout sau tất cả retries", tab_id)
             elif video_status == 'stopped':
                 task.status = "failed"
                 task.error_message = "Generation stopped"
                 self.tab_ready[tab_id] = True
                 return task
             
-            task.status = "completed"
-            task.completed_at = datetime.now()
-            
-            # Save user_data_dir and cookies for download later (if needed)
-            task.user_data_dir = self._user_data_dir
-            task.account_cookies = self.account.cookies
+            # Save metadata nếu chưa set status (trường hợp completed đã set ở trên)
+            if task.status not in ("completed", "failed"):
+                task.status = "failed"
+                task.error_message = "Unknown error"
             
             # Step 9: Navigate back to /imagine for next video
             self._log("🔄 Ready for next video...", tab_id)
@@ -1782,15 +1844,25 @@ class MultiTabVideoGenerator:
             return task
             
         except Exception as e:
-            task.status = "failed"
-            task.error_message = str(e)
             self._log(f"❌ Error: {e}", tab_id)
             import traceback
             traceback.print_exc()
+            # Retry on unexpected exception
+            if retry_count < MAX_RETRIES:
+                self._log(f"🔄 Retrying after error ({retry_count + 1}/{MAX_RETRIES})...", tab_id)
+                try:
+                    await tab.get(IMAGINE_URL)
+                    await asyncio.sleep(2)
+                except:
+                    pass
+                self.tab_ready[tab_id] = True
+                return await self.generate_on_tab(tab_id, prompt, settings, retry_count + 1, custom_output_dir, custom_filename)
+            task.status = "failed"
+            task.error_message = str(e)
             self.tab_ready[tab_id] = True
             return task
     
-    async def _wait_for_video_ready_on_tab(self, tab, tab_id: int, timeout: int = 300) -> str:
+    async def _wait_for_video_ready_on_tab(self, tab, tab_id: int, timeout: int = 150) -> str:
         """
         Wait for video to be ready on post page.
         Returns:
@@ -1900,98 +1972,249 @@ class MultiTabVideoGenerator:
             self._log(f"⚠️ Share click error: {e}", tab_id)
             return False
     
-    async def _download_video_on_tab(self, tab, task: VideoTask, tab_id: int) -> Optional[str]:
+    async def _download_video_on_tab(self, tab, task: VideoTask, tab_id: int, custom_output_dir: Optional[str] = None, custom_filename: Optional[str] = None) -> Optional[str]:
         """
-        Download video using CDP set_download_behavior.
+        Smart CDP download với retry.
         
-        The video is hosted on imagine-public.x.ai which requires __cf_bm cookie.
-        We use CDP to set download behavior and navigate to video URL.
+        Strategy:
+        - Mở tab mới → set_download_behavior → navigate to download URL
+        - Check file mỗi 2s (nhanh hơn 5s cũ)
+        - Nếu không thấy file sau 30s → close tab, thử lại (tối đa 3 CDP attempts)
+        - Mỗi attempt thử cả URL gốc và URL có &dl=1
+        - Tìm file theo post_id pattern, không dùng newest
         
-        Fix: Tìm file theo post_id thay vì newest file, tránh lẫn giữa các tab/account.
+        Args:
+            custom_output_dir: Custom output directory (default: OUTPUT_DIR)
+            custom_filename: Custom filename (default: {post_id}.mp4)
         """
-        try:
-            # Build video URL
-            video_url = task.media_url
-            download_url = f"{video_url}&dl=1" if '?' in video_url else f"{video_url}?dl=1"
-            post_id = task.post_id
-            
-            # Expected filename from server: {post_id}.mp4
-            expected_file = OUTPUT_DIR / f"{post_id}.mp4"
-            
-            self._log(f"   Downloading video...", tab_id)
-            
-            # Step 1: Navigate to video URL first to get __cf_bm cookie
-            download_tab = await self.browser.get(video_url, new_tab=True)
-            await asyncio.sleep(3)
-            
-            # Step 2: Set download behavior using CDP
-            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            try:
-                await download_tab.send(cdp.browser.set_download_behavior(
-                    behavior="allow",
-                    download_path=str(OUTPUT_DIR.absolute())
-                ))
-            except Exception as e:
-                self._log(f"   CDP set_download_behavior error: {e}", tab_id)
-            
-            # Step 3: Navigate to download URL
-            self._log(f"   Triggering download...", tab_id)
-            await download_tab.get(download_url)
-            
-            # Step 4: Wait for download to complete — tìm theo post_id, không dùng newest
-            for i in range(30):  # Max 2.5 minutes
-                await asyncio.sleep(5)
-                
-                # Check for expected file (server names it {post_id}.mp4)
-                if expected_file.exists():
-                    size = os.path.getsize(expected_file)
-                    if size > 10000:
-                        await asyncio.sleep(2)
-                        new_size = os.path.getsize(expected_file)
-                        if new_size == size:  # Size stable = download complete
-                            try:
-                                await download_tab.close()
-                            except:
-                                pass
-                            self._log(f"✅ Downloaded: {post_id}.mp4", tab_id)
-                            return str(expected_file)
-                
-                # Fallback: check for share-videos file pattern (some servers use different names)
-                import glob
-                patterns = [
-                    str(OUTPUT_DIR / f"*{post_id}*"),
-                    str(OUTPUT_DIR / f"share-videos*{post_id[:8]}*"),
-                ]
-                for pattern in patterns:
-                    matches = glob.glob(pattern)
-                    for match_file in matches:
-                        if match_file.endswith('.mp4') and os.path.getsize(match_file) > 10000:
-                            await asyncio.sleep(2)
-                            if os.path.getsize(match_file) == os.path.getsize(match_file):
+        import glob
+        
+        video_url = task.media_url
+        post_id = task.post_id
+        if not video_url or not post_id:
+            self._log("⚠️ Missing video URL or post_id", tab_id)
+            return None
+        
+        # Use custom output dir or default
+        output_dir = Path(custom_output_dir) if custom_output_dir else OUTPUT_DIR
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use custom filename or default to post_id.mp4
+        filename = custom_filename if custom_filename else f"{post_id}.mp4"
+        expected_file = output_dir / filename
+        
+        # Also check default Downloads folder (Chrome may download there)
+        downloads_dir = Path.home() / "Downloads"
+        search_dirs = [output_dir, downloads_dir] if output_dir != downloads_dir else [output_dir]
+        
+        # Nếu file đã tồn tại (từ attempt trước hoặc lần chạy trước), return luôn
+        if expected_file.exists():
+            size = os.path.getsize(expected_file)
+            if size > 10000:
+                self._log(f"✅ File already exists: {filename} ({size//1024}KB)", tab_id)
+                return str(expected_file)
+        
+        # Cũng check file có chứa post_id trong tất cả search dirs
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            for pattern in [f"*{post_id}*.mp4", f"*{post_id[:8]}*.mp4"]:
+                matches = glob.glob(str(search_dir / pattern))
+                for match_file in matches:
+                    if os.path.exists(match_file):
+                        size = os.path.getsize(match_file)
+                        if size > 10000:
+                            # Move to expected location
+                            if match_file != str(expected_file):
                                 try:
-                                    await download_tab.close()
-                                except:
-                                    pass
-                                self._log(f"✅ Downloaded: {os.path.basename(match_file)}", tab_id)
+                                    import shutil
+                                    shutil.move(match_file, str(expected_file))
+                                    self._log(f"✅ File moved: {filename} ({size//1024}KB)", tab_id)
+                                    return str(expected_file)
+                                except Exception as e:
+                                    self._log(f"✅ File found: {os.path.basename(match_file)} ({size//1024}KB)", tab_id)
+                                    return match_file
+                            else:
+                                self._log(f"✅ File already exists: {filename} ({size//1024}KB)", tab_id)
                                 return match_file
-                
-                if i % 3 == 0:
-                    self._log(f"   Waiting for download... ({i * 5}s)", tab_id)
-            
-            # Close download tab
+        
+        MAX_CDP_ATTEMPTS = 3
+        
+        for attempt in range(MAX_CDP_ATTEMPTS):
+            download_tab = None
             try:
-                await download_tab.close()
-            except:
-                pass
-            
-            self._log(f"⚠️ Download timeout", tab_id)
-            return None
+                # Alternate giữa URL có dl=1 và không — đôi khi server respond khác nhau
+                if attempt % 2 == 0:
+                    dl_url = f"{video_url}&dl=1" if '?' in video_url else f"{video_url}?dl=1"
+                else:
+                    dl_url = video_url
                 
-        except Exception as e:
-            self._log(f"⚠️ Download error: {e}", tab_id)
-            import traceback
-            traceback.print_exc()
-            return None
+                if attempt > 0:
+                    self._log(f"🔄 CDP download attempt {attempt + 1}/{MAX_CDP_ATTEMPTS}...", tab_id)
+                else:
+                    self._log(f"   Downloading video...", tab_id)
+                
+                # Mở tab mới → navigate để lấy __cf_bm cookie
+                download_tab = await self.browser.get(video_url, new_tab=True)
+                await asyncio.sleep(2)
+                
+                # Set download behavior to custom output dir
+                try:
+                    await download_tab.send(cdp.browser.set_download_behavior(
+                        behavior="allow",
+                        download_path=str(output_dir.absolute())
+                    ))
+                except Exception as e:
+                    self._log(f"   set_download_behavior error: {e}", tab_id)
+                
+                # Trigger download
+                self._log(f"   Triggering download...", tab_id)
+                await download_tab.get(dl_url)
+                
+                # Check file nhanh — mỗi 2s, timeout 30s per attempt
+                found_path = await self._wait_for_download_file(post_id, tab_id, timeout=30, output_dir=output_dir, expected_filename=filename)
+                
+                # Close download tab
+                try:
+                    await download_tab.close()
+                except:
+                    pass
+                download_tab = None
+                
+                if found_path:
+                    self._log(f"✅ Downloaded: {os.path.basename(found_path)}", tab_id)
+                    return found_path
+                
+                # Attempt failed, sẽ retry
+                if attempt < MAX_CDP_ATTEMPTS - 1:
+                    self._log(f"⚠️ Download not found after 30s, will retry...", tab_id)
+                    await asyncio.sleep(2)
+                    
+            except Exception as e:
+                self._log(f"⚠️ Download attempt {attempt + 1} error: {e}", tab_id)
+                if download_tab:
+                    try:
+                        await download_tab.close()
+                    except:
+                        pass
+                if attempt < MAX_CDP_ATTEMPTS - 1:
+                    await asyncio.sleep(2)
+        
+        self._log(f"❌ Download failed after {MAX_CDP_ATTEMPTS} CDP attempts", tab_id)
+        return None
+    
+    async def _wait_for_download_file(self, post_id: str, tab_id: int, timeout: int = 30, output_dir: Path = None, expected_filename: str = None) -> Optional[str]:
+        """
+        Check file download mỗi 2s, return path nếu tìm thấy.
+        Tìm theo post_id pattern — tránh lẫn giữa các tab.
+        Cũng check file mới nhất trong folder nếu không tìm thấy theo post_id.
+        
+        Args:
+            output_dir: Custom output directory (default: OUTPUT_DIR)
+            expected_filename: Expected filename to rename to (default: {post_id}.mp4)
+        """
+        import glob
+        
+        # Use custom output dir or default
+        out_dir = output_dir if output_dir else OUTPUT_DIR
+        filename = expected_filename if expected_filename else f"{post_id}.mp4"
+        expected_file = out_dir / filename
+        
+        # Also check default Downloads folder (Chrome may download there)
+        downloads_dir = Path.home() / "Downloads"
+        search_dirs = [out_dir, downloads_dir] if out_dir != downloads_dir else [out_dir]
+        
+        elapsed = 0
+        last_log = 0
+        start_time = time.time()
+        
+        while elapsed < timeout:
+            await asyncio.sleep(2)
+            elapsed += 2
+            
+            # Check exact expected file
+            if expected_file.exists():
+                size = os.path.getsize(expected_file)
+                if size > 10000:
+                    # Chờ thêm 1s rồi check size stable
+                    await asyncio.sleep(1)
+                    new_size = os.path.getsize(expected_file)
+                    if new_size == size:
+                        return str(expected_file)
+                    # File đang download, chờ tiếp
+                    continue
+            
+            # Check in all search directories
+            for search_dir in search_dirs:
+                if not search_dir.exists():
+                    continue
+                    
+                # Check nếu có file .crdownload (đang download)
+                crdownload = search_dir / f"{filename}.crdownload"
+                crdownload_postid = search_dir / f"{post_id}.mp4.crdownload"
+                if crdownload.exists() or crdownload_postid.exists():
+                    # File đang download, chờ tiếp
+                    if elapsed - last_log >= 10:
+                        self._log(f"   File downloading... ({elapsed}s)", tab_id)
+                        last_log = elapsed
+                    continue
+                
+                # Fallback: tìm file có chứa post_id
+                for pattern in [f"*{post_id}*", f"*{post_id[:8]}*"]:
+                    matches = glob.glob(str(search_dir / pattern))
+                    for match_file in matches:
+                        if match_file.endswith('.mp4') and os.path.exists(match_file):
+                            size = os.path.getsize(match_file)
+                            if size > 10000:
+                                await asyncio.sleep(1)
+                                if os.path.getsize(match_file) == size:
+                                    # Move to expected location if different
+                                    if match_file != str(expected_file):
+                                        try:
+                                            import shutil
+                                            # Ensure target dir exists
+                                            expected_file.parent.mkdir(parents=True, exist_ok=True)
+                                            shutil.move(match_file, str(expected_file))
+                                            return str(expected_file)
+                                        except Exception as e:
+                                            self._log(f"   Move error: {e}", tab_id)
+                                            return match_file
+                                    return match_file
+            
+            # Fallback 2: Check file mới nhất được tạo sau khi bắt đầu download
+            for search_dir in search_dirs:
+                if not search_dir.exists():
+                    continue
+                try:
+                    mp4_files = list(search_dir.glob("*.mp4"))
+                    recent_files = [f for f in mp4_files if f.stat().st_mtime > start_time]
+                    if recent_files:
+                        # Lấy file mới nhất
+                        newest = max(recent_files, key=lambda f: f.stat().st_mtime)
+                        size = os.path.getsize(newest)
+                        if size > 10000:
+                            await asyncio.sleep(1)
+                            if os.path.getsize(newest) == size:
+                                # Move về đúng vị trí expected nếu khác
+                                if str(newest) != str(expected_file):
+                                    try:
+                                        import shutil
+                                        expected_file.parent.mkdir(parents=True, exist_ok=True)
+                                        shutil.move(str(newest), str(expected_file))
+                                        return str(expected_file)
+                                    except Exception as e:
+                                        self._log(f"   Move error: {e}", tab_id)
+                                        return str(newest)
+                                return str(newest)
+                except Exception as e:
+                    pass
+            
+            # Log mỗi 10s
+            if elapsed - last_log >= 10:
+                self._log(f"   Waiting for download... ({elapsed}s)", tab_id)
+                last_log = elapsed
+        
+        return None
     
     async def _select_video_mode_on_tab(self, tab, tab_id: int, settings: VideoSettings = None) -> None:
         """Select Video mode and apply settings on a specific tab"""
@@ -2227,32 +2450,45 @@ class MultiTabVideoGenerator:
         prompts,
         settings: VideoSettings,
         on_task_complete: Optional[Callable] = None,
-        max_retries: int = 1
+        max_retries: int = 3,
+        output_dir: Optional[str] = None
     ) -> List[VideoTask]:
         """
         Generate multiple videos concurrently using all tabs.
         
         Args:
-            prompts: List of str (text-to-video) OR List of Tuple[str, Optional[str]] (prompt, image_path)
+            prompts: List of str (text-to-video) OR List of Tuple (prompt, image_path, subfolder, stt)
             settings: Video settings
             on_task_complete: Callback when each task completes
-            max_retries: Number of retries for failed tasks
+            max_retries: Number of retries for failed tasks (default 3)
+            output_dir: Base output directory for videos
+        
+        Retry logic:
+        - Task status "failed" → retry
+        - Task status "completed" nhưng không có output_path → coi như failed, retry
         """
         results: List[VideoTask] = []
         
-        # Normalize prompts to list of (prompt, image_path_or_none)
+        # Normalize prompts to list of (prompt, image_path, subfolder, stt)
         normalized = []
         for p in prompts:
             if isinstance(p, tuple):
-                normalized.append(p)  # (prompt, image_path)
+                if len(p) == 4:
+                    # (prompt, image_path, subfolder, stt)
+                    normalized.append(p)
+                elif len(p) == 2:
+                    # Legacy (prompt, image_path) → add None subfolder and auto stt
+                    normalized.append((p[0], p[1], None, len(normalized) + 1))
+                else:
+                    normalized.append((p[0], None, None, len(normalized) + 1))
             else:
-                normalized.append((p, None))  # text-only
+                normalized.append((p, None, None, len(normalized) + 1))  # text-only
         
         prompt_queue = list(normalized)
-        retry_queue: List[Tuple[Tuple[str, Optional[str]], int]] = []  # ((prompt, image), retry_count)
-        active_tasks: Dict[int, Tuple[asyncio.Task, Tuple[str, Optional[str]], int]] = {}
+        retry_queue: List[Tuple[Tuple[str, Optional[str], Optional[str], int], int]] = []  # (item, retry_count)
+        active_tasks: Dict[int, Tuple[asyncio.Task, Tuple[str, Optional[str], Optional[str], int], int]] = {}
         
-        mode = "Image→Video" if any(img for _, img in normalized) else "Text→Video"
+        mode = "Image→Video" if any(img for _, img, _, _ in normalized) else "Text→Video"
         self._log(f"📋 Starting batch ({mode}): {len(normalized)} prompts, {len(self.tabs)} tabs")
         
         while prompt_queue or retry_queue or active_tasks:
@@ -2275,16 +2511,35 @@ class MultiTabVideoGenerator:
                         self._log(f"▶️ Starting: {item[0][:30]}...", tab_id)
                     
                     if item:
-                        prompt_text, image_path = item
+                        prompt_text, image_path, subfolder, stt = item
+                        # Build custom filename: {stt}_{prompt_short}.mp4
+                        prompt_short = re.sub(r'[^\w\s]', '', prompt_text)[:30].replace(' ', '_')
+                        custom_filename = f"{stt}_{prompt_short}.mp4"
+                        # Build output path with subfolder
+                        if output_dir and subfolder:
+                            custom_output_dir = str(Path(output_dir) / subfolder)
+                        elif output_dir:
+                            custom_output_dir = output_dir
+                        else:
+                            custom_output_dir = str(OUTPUT_DIR)
+                        
                         if image_path:
                             # Image-to-video flow
                             task = asyncio.create_task(
-                                self.generate_image_to_video_on_tab(tab_id, prompt_text, image_path, settings)
+                                self.generate_image_to_video_on_tab(
+                                    tab_id, prompt_text, image_path, settings,
+                                    custom_output_dir=custom_output_dir,
+                                    custom_filename=custom_filename
+                                )
                             )
                         else:
                             # Text-to-video flow
                             task = asyncio.create_task(
-                                self.generate_on_tab(tab_id, prompt_text, settings)
+                                self.generate_on_tab(
+                                    tab_id, prompt_text, settings,
+                                    custom_output_dir=custom_output_dir,
+                                    custom_filename=custom_filename
+                                )
                             )
                         active_tasks[tab_id] = (task, item, retry_count)
             
@@ -2311,17 +2566,24 @@ class MultiTabVideoGenerator:
                     try:
                         video_task = completed_task.result()
                         
-                        if video_task.status == "failed" and retry_count < max_retries and item_used:
-                            self._log(f"⚠️ Failed, will retry: {video_task.error_message}", completed_tab_id or -1)
+                        # Kiểm tra thực sự thành công: phải có output_path (file đã download)
+                        actually_failed = (
+                            video_task.status == "failed" or
+                            (video_task.status == "completed" and not video_task.output_path)
+                        )
+                        
+                        if actually_failed and retry_count < max_retries and item_used:
+                            reason = video_task.error_message or "no output file"
+                            self._log(f"⚠️ Failed ({reason}), will retry ({retry_count + 1}/{max_retries})", completed_tab_id or -1)
                             retry_queue.append((item_used, retry_count + 1))
                         else:
                             results.append(video_task)
                             if on_task_complete:
                                 on_task_complete(video_task)
-                            if video_task.status == "completed":
+                            if video_task.status == "completed" and video_task.output_path:
                                 self._log(f"✅ Done: {video_task.post_id}", completed_tab_id or -1)
                             else:
-                                self._log(f"❌ Failed: {video_task.error_message}", completed_tab_id or -1)
+                                self._log(f"❌ Failed: {video_task.error_message or 'no output file'}", completed_tab_id or -1)
                     except Exception as e:
                         self._log(f"❌ Task error: {e}")
                         if retry_count < max_retries and item_used:
@@ -2329,8 +2591,9 @@ class MultiTabVideoGenerator:
             else:
                 await asyncio.sleep(0.5)
         
-        success_count = len([r for r in results if r.status == 'completed'])
-        self._log(f"🎉 Batch complete: {success_count}/{len(results)} OK")
+        success_count = len([r for r in results if r.status == 'completed' and r.output_path])
+        fail_count = len(results) - success_count
+        self._log(f"🎉 Batch complete: {success_count}/{len(results)} OK" + (f", {fail_count} failed" if fail_count else ""))
         return results
 
 

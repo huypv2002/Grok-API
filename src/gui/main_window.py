@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, QTimer, QPointF, Property, QPropertyAnimation, QT
 from PySide6.QtGui import QFont, QPainter, QLinearGradient, QRadialGradient, QColor, QPen
 from .account_tab import AccountTab
 from .video_gen_tab import VideoGenTab
+from .image_gen_tab import ImageGenTab
 from .history_tab import HistoryTab
 from ..core.account_manager import AccountManager
 from ..core.session_manager import SessionManager
@@ -330,7 +331,8 @@ class MainWindow(QMainWindow):
         tabs_info = [
             ("👤 Tài khoản", 0),
             ("🎬 Tạo Video", 1),
-            ("📜 Lịch sử", 2),
+            ("🖼️ Tạo Ảnh", 2),
+            ("📜 Lịch sử", 3),
         ]
         
         for text, idx in tabs_info:
@@ -350,10 +352,12 @@ class MainWindow(QMainWindow):
         # Create tabs
         self.account_tab = AccountTab(self.account_manager, self.session_manager)
         self.video_gen_tab = VideoGenTab(self.account_manager, None, self.history_manager)
+        self.image_gen_tab = ImageGenTab(self.account_manager, self.history_manager)
         self.history_tab = HistoryTab(self.history_manager)
         
         self.stack.addWidget(self.account_tab)
         self.stack.addWidget(self.video_gen_tab)
+        self.stack.addWidget(self.image_gen_tab)
         self.stack.addWidget(self.history_tab)
         
         content_layout.addWidget(self.stack, stretch=1)
@@ -376,6 +380,7 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.account_tab.account_changed.connect(self._on_account_changed)
         self.video_gen_tab.video_completed.connect(self._on_video_completed)
+        self.image_gen_tab.image_completed.connect(self._on_video_completed)
         
         # Initial state
         self._switch_tab(0)
@@ -502,11 +507,14 @@ class MainWindow(QMainWindow):
             self.account_tab.set_dark_mode(self.is_dark)
         if hasattr(self.video_gen_tab, 'set_dark_mode'):
             self.video_gen_tab.set_dark_mode(self.is_dark)
+        if hasattr(self.image_gen_tab, 'set_dark_mode'):
+            self.image_gen_tab.set_dark_mode(self.is_dark)
         if hasattr(self.history_tab, 'set_dark_mode'):
             self.history_tab.set_dark_mode(self.is_dark)
     
     def _on_account_changed(self):
         self.video_gen_tab.refresh_accounts()
+        self.image_gen_tab.refresh_accounts()
         self._update_account_count()
     
     def _on_video_completed(self):
@@ -518,14 +526,18 @@ class MainWindow(QMainWindow):
         self.account_count.setText(f"👤 {logged_in}/{len(accounts)} tài khoản")
     
     def _update_status(self):
-        workers = len(self.video_gen_tab.workers) if hasattr(self.video_gen_tab, 'workers') else 0
-        if workers > 0:
-            self.status_label.setText(f"🔄 Đang chạy {workers} tác vụ...")
+        workers = len(self.video_gen_tab.account_workers) if hasattr(self.video_gen_tab, 'account_workers') else 0
+        img_workers = len(self.image_gen_tab.account_workers) if hasattr(self.image_gen_tab, 'account_workers') else 0
+        total = workers + img_workers
+        if total > 0:
+            self.status_label.setText(f"🔄 Đang chạy {total} tác vụ...")
         else:
             self.status_label.setText("✅ Sẵn sàng")
     
     def closeEvent(self, event):
         if hasattr(self.video_gen_tab, '_stop_generation'):
             self.video_gen_tab._stop_generation()
+        if hasattr(self.image_gen_tab, '_stop'):
+            self.image_gen_tab._stop()
         self.history_manager.close()
         event.accept()

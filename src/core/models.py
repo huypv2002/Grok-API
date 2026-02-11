@@ -1,7 +1,7 @@
 """Data models for X Grok Video Generator"""
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal, Optional, List
 from uuid import uuid4
 
 @dataclass
@@ -42,6 +42,35 @@ class VideoTask:
     output_path: Optional[str] = None
     user_data_dir: Optional[str] = None  # Browser profile dir for download
     account_cookies: Optional[dict] = None  # Account cookies for download
+    created_at: datetime = field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+
+# ==================== Image Generation Models ====================
+
+@dataclass
+class ImageSettings:
+    """Settings cho text-to-image generation — 1 prompt = 1 ảnh"""
+    aspect_ratio: str = "3:2"  # 2:3, 3:2, 1:1, 9:16, 16:9
+    
+    def validate(self) -> bool:
+        return self.aspect_ratio in ["2:3", "3:2", "1:1", "9:16", "16:9"]
+
+@dataclass
+class ImageTask:
+    """Task cho image generation — tương tự VideoTask"""
+    id: str = field(default_factory=lambda: str(uuid4()))
+    account_email: str = ""
+    prompt: str = ""
+    settings: ImageSettings = field(default_factory=ImageSettings)
+    status: Literal["pending", "creating", "completed", "failed"] = "pending"
+    num_images_requested: int = 1
+    num_images_downloaded: int = 0
+    image_urls: List[str] = field(default_factory=list)  # URLs of generated images
+    output_paths: List[str] = field(default_factory=list)  # Downloaded file paths
+    output_dir: Optional[str] = None  # Directory chứa ảnh output
+    account_cookies: Optional[dict] = None
     created_at: datetime = field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None

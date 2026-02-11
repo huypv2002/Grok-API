@@ -48,15 +48,17 @@ class AccountWorker(QThread):
     task_completed = Signal(str, object)  # email, VideoTask
     all_finished = Signal(str)  # email
     
-    def __init__(self, account, prompts, settings, num_tabs=3, headless=True):
+    def __init__(self, account, prompts, settings, output_dir, num_tabs=3, headless=True):
         """
         Args:
-            prompts: List[str] (text mode) or List[Tuple[str, Optional[str]]] (prompt, image_path)
+            prompts: List of tuples (prompt, image_path, subfolder, stt)
+            output_dir: Base output directory
         """
         super().__init__()
         self.account = account
-        self.prompts = prompts  # can be str list or tuple list
+        self.prompts = prompts  # list of (prompt, image_path, subfolder, stt)
         self.settings = settings
+        self.output_dir = output_dir
         self.num_tabs = num_tabs
         self.headless = headless
         self._stopped = False
@@ -104,7 +106,8 @@ class AccountWorker(QThread):
             await self._generator.generate_batch(
                 self.prompts,
                 self.settings,
-                on_task_complete
+                on_task_complete,
+                output_dir=self.output_dir
             )
             
         finally:
@@ -390,7 +393,7 @@ class VideoGenTab(QWidget):
         self.clear_btn = QPushButton("🗑️ Xóa")
         self.import_btn.clicked.connect(self._import_prompts)
         self.import_folder_btn.clicked.connect(self._import_folder)
-        self.clear_btn.clicked.connect(lambda: self.prompt_input.clear())
+        self.clear_btn.clicked.connect(self._clear_prompts)
         self.import_btn.setToolTip("Nhập 1 file TXT → tạo subfolder trùng tên")
         self.import_folder_btn.setToolTip("Chọn folder chứa nhiều file TXT → mỗi file = 1 batch")
         btn_row.addWidget(self.import_btn)
@@ -428,9 +431,14 @@ class VideoGenTab(QWidget):
         pair_btn_row = QHBoxLayout()
         self.add_pair_btn = QPushButton("➕ Thêm cặp")
         self.remove_pair_btn = QPushButton("🗑️ Xóa cặp")
+        self.import_pairs_btn = QPushButton("📂 Nhập Folder")
         self.add_pair_btn.clicked.connect(self._add_image_pair)
         self.remove_pair_btn.clicked.connect(self._remove_image_pair)
+        self.import_pairs_btn.clicked.connect(self._import_image_folder)
+        self.add_pair_btn.setToolTip("Chọn 1 folder ảnh + 1 file TXT")
+        self.import_pairs_btn.setToolTip("Chọn folder cha chứa nhiều subfolder\nMỗi subfolder: ảnh + file .txt cùng tên")
         pair_btn_row.addWidget(self.add_pair_btn)
+        pair_btn_row.addWidget(self.import_pairs_btn)
         pair_btn_row.addWidget(self.remove_pair_btn)
         img_layout.addLayout(pair_btn_row)
         
@@ -829,7 +837,7 @@ class VideoGenTab(QWidget):
             """)
         
         for btn in [self.import_btn, self.import_folder_btn, self.clear_btn,
-                    self.add_pair_btn, self.remove_pair_btn]:
+                    self.add_pair_btn, self.remove_pair_btn, self.import_pairs_btn]:
             btn.setStyleSheet(btn_style)
         
         # Mode buttons styling
@@ -1045,6 +1053,111 @@ class VideoGenTab(QWidget):
             self.pair_list.takeItem(row)
             self._update_pair_summary()
     
+    def _import_image_folder(self):
+        """
+        Import nhiều cặp từ 1 folder cha.
+        
+        Hỗ trợ 2 cấu trúc:
+        
+        1) Subfolder structure:
+           parent/
+             subfolder1/        ← ảnh
+             subfolder1.txt     ← prompt
+             subfolder2/
+             subfolder2.txt
+        
+        2) Flat structure (folder ảnh + TXT cùng cấp):
+           parent/
+             folder_a/          ← ảnh
+             folder_a.txt       ← prompt
+             folder_b/
+             folder_b.txt
+        """
+        parent = QFileDialog.getExistingDirectory(self, "Chọn folder cha chứa nhiều cặp (subfolder + TXT)")
+        if not parent:
+            return
+        
+        parent_path = Path(parent)
+        found_pairs = 0
+        
+        # Tìm tất cả subfolder có file TXT cùng tên
+        for item in sorted(parent_path.iterdir(), key=lambda f: natural_sort_key(f.name)):
+            if not item.is_dir():
+                continue
+            # Skip hidden folders
+            if item.name.startswith('.'):
+                continue
+            
+            # Tìm file TXT match: cùng tên subfolder hoặc nằm trong subfolder
+            txt_candidates = [
+                parent_path / f"{item.name}.txt",           # parent/subfolder.txt
+                item / f"{item.name}.txt",                   # subfolder/subfolder.txt
+                item / "prompt.txt",                          # subfolder/prompt.txt
+                item / "prompts.txt",                         # subfolder/prompts.txt
+            ]
+            
+            txt_path = None
+            for candidate in txt_candidates:
+                if candidate.exists():
+                    txt_path = candidate
+                    break
+            
+            if not txt_path:
+                # Tìm bất kỳ file .txt nào trong parent cùng tên
+                for f in parent_path.iterdir():
+                    if f.suffix.lower() == '.txt' and f.stem.lower() == item.name.lower():
+                        txt_path = f
+                        break
+            
+            if not txt_path:
+                continue
+            
+            # Tìm ảnh trong subfolder
+            images = []
+            for f in item.iterdir():
+                if f.suffix.lower() in IMAGE_EXTENSIONS and f.is_file():
+                    images.append(f)
+            images.sort(key=lambda f: natural_sort_key(f.name))
+            
+            if not images:
+                continue
+            
+            # Đọc prompts
+            try:
+                with open(txt_path, 'r', encoding='utf-8') as f:
+                    prompts = [l.strip() for l in f if l.strip()]
+            except:
+                continue
+            
+            if not prompts:
+                continue
+            
+            # Match count
+            count = min(len(images), len(prompts))
+            images = images[:count]
+            prompts = prompts[:count]
+            
+            # Add pair
+            self._image_pairs.append((str(item), str(txt_path), images, prompts))
+            self.pair_list.addItem(f"📁 {item.name} + 📄 {txt_path.name} ({count} cặp)")
+            found_pairs += 1
+        
+        if found_pairs > 0:
+            self._update_pair_summary()
+            self._log(f"✅ Đã nhập {found_pairs} cặp từ folder: {parent_path.name}")
+        else:
+            QMessageBox.warning(
+                self, "Không tìm thấy cặp",
+                f"Không tìm thấy cặp subfolder + TXT trong:\n{parent}\n\n"
+                f"Cấu trúc cần:\n"
+                f"  📁 folder_cha/\n"
+                f"    📁 ten_1/  (chứa ảnh)\n"
+                f"    📄 ten_1.txt  (chứa prompt)\n"
+                f"    📁 ten_2/\n"
+                f"    📄 ten_2.txt\n"
+                f"    ..."
+            )
+    
     def _update_pair_summary(self):
         """Update summary label"""
         total = sum(len(imgs) for _, _, imgs, _ in self._image_pairs)
@@ -1055,11 +1168,23 @@ class VideoGenTab(QWidget):
             self.pair_summary.setText("")
     
     def _get_image_prompts(self):
-        """Get all (prompt, image_path) tuples from image pairs, in order"""
+        """Get all (prompt, image_path, subfolder_name, stt) tuples from image pairs, in order.
+        
+        Returns list of tuples:
+        - prompt: text prompt
+        - image_path: path to source image
+        - subfolder_name: name of subfolder (from TXT filename without extension)
+        - stt: 1-based index within that TXT file
+        """
+        from pathlib import Path
         result = []
         for folder, txt, images, prompts in self._image_pairs:
-            for img, prompt in zip(images, prompts):
-                result.append((prompt, str(img)))
+            # Get subfolder name from TXT filename (without .txt extension)
+            txt_path = Path(txt)
+            subfolder_name = txt_path.stem  # filename without extension
+            
+            for idx, (img, prompt) in enumerate(zip(images, prompts), start=1):
+                result.append((prompt, str(img), subfolder_name, idx))
         return result
     
     # ==================== Account & Settings ====================
@@ -1091,18 +1216,33 @@ class VideoGenTab(QWidget):
                     selected.append(acc)
         return selected
     
+    def _clear_prompts(self):
+        """Clear prompts and batch info"""
+        self.prompt_input.clear()
+        self._batch_queue = []
+        self.batch_info.setText("")
+    
     def _import_prompts(self):
         path, _ = QFileDialog.getOpenFileName(self, "Chọn file", "", "Text (*.txt)")
         if path:
             try:
+                from pathlib import Path
+                txt_path = Path(path)
                 with open(path, 'r', encoding='utf-8') as f:
                     prompts = [l.strip() for l in f if l.strip()]
                 self.prompt_input.setPlainText('\n'.join(prompts))
-                self._log(f"✅ Đã nhập {len(prompts)} prompt")
+                
+                # Store batch info: single file = single batch
+                subfolder_name = txt_path.stem  # filename without .txt
+                self._batch_queue = [(subfolder_name, prompts)]
+                self.batch_info.setText(f"📁 Batch: {subfolder_name} ({len(prompts)} prompts)")
+                
+                self._log(f"✅ Đã nhập {len(prompts)} prompt từ {subfolder_name}.txt")
             except Exception as e:
                 QMessageBox.warning(self, "Lỗi", str(e))
 
     def _import_folder(self):
+        """Import folder chứa nhiều file TXT - mỗi file = 1 batch với subfolder riêng"""
         folder = QFileDialog.getExistingDirectory(self, "Chọn folder chứa file TXT")
         if folder:
             try:
@@ -1111,12 +1251,24 @@ class VideoGenTab(QWidget):
                 if not txt_files:
                     QMessageBox.warning(self, "Lỗi", "Không tìm thấy file .txt trong folder")
                     return
+                
+                # Store batch info: list of (subfolder_name, [prompts])
+                self._batch_queue = []
                 all_prompts = []
+                
                 for f in txt_files:
                     lines = [l.strip() for l in f.read_text(encoding='utf-8').splitlines() if l.strip()]
-                    all_prompts.extend(lines)
+                    if lines:
+                        subfolder_name = f.stem  # filename without .txt
+                        self._batch_queue.append((subfolder_name, lines))
+                        all_prompts.extend(lines)
+                
                 self.prompt_input.setPlainText('\n'.join(all_prompts))
                 self._log(f"✅ Đã nhập {len(all_prompts)} prompt từ {len(txt_files)} file")
+                
+                # Show batch info
+                batch_info = ", ".join([f"{name}({len(prompts)})" for name, prompts in self._batch_queue])
+                self.batch_info.setText(f"📁 Batches: {batch_info}")
             except Exception as e:
                 QMessageBox.warning(self, "Lỗi", str(e))
 
@@ -1129,9 +1281,11 @@ class VideoGenTab(QWidget):
 
     def _start(self):
         """Start multi-tab video generation (text or image mode)"""
+        from pathlib import Path
+        
         # Build prompt list based on mode
         if self._gen_mode == "image":
-            # Image mode: get (prompt, image_path) tuples
+            # Image mode: get (prompt, image_path, subfolder, stt) tuples
             all_items = self._get_image_prompts()
             if not all_items:
                 QMessageBox.warning(self, "Lỗi", "Thêm ít nhất 1 cặp Folder + TXT")
@@ -1142,8 +1296,18 @@ class VideoGenTab(QWidget):
             if not text:
                 QMessageBox.warning(self, "Lỗi", "Nhập prompt trước")
                 return
-            prompts = [p.strip() for p in text.split('\n') if p.strip()]
-            all_items = [(p, None) for p in prompts]  # (prompt, None) for text mode
+            
+            # Check if we have batch info from folder import
+            if hasattr(self, '_batch_queue') and self._batch_queue:
+                # Build items with subfolder info from batch queue
+                all_items = []
+                for subfolder_name, prompts in self._batch_queue:
+                    for idx, prompt in enumerate(prompts, start=1):
+                        all_items.append((prompt, None, subfolder_name, idx))
+            else:
+                # Simple text input - no subfolder
+                prompts = [p.strip() for p in text.split('\n') if p.strip()]
+                all_items = [(p, None, None, i+1) for i, p in enumerate(prompts)]
         
         accounts = self._get_selected_accounts()
         if not accounts:
@@ -1152,18 +1316,34 @@ class VideoGenTab(QWidget):
         
         total = len(all_items)
         
+        # Create subfolders for each unique subfolder name
+        base_output = Path(self._output_dir)
+        subfolders_created = set()
+        for item in all_items:
+            subfolder = item[2]  # subfolder name (from TXT filename)
+            if subfolder and subfolder not in subfolders_created:
+                subfolder_path = base_output / subfolder
+                subfolder_path.mkdir(parents=True, exist_ok=True)
+                subfolders_created.add(subfolder)
+        if subfolders_created:
+            self._log(f"📁 Tạo {len(subfolders_created)} subfolder: {', '.join(sorted(subfolders_created))}")
+        
         # Reset state
-        self.prompt_queue = all_items  # list of (prompt, image_path_or_none)
+        self.prompt_queue = all_items  # list of (prompt, image_path, subfolder, stt)
         self.completed_prompts = []
         self.failed_prompts = []
         self.current_idx = 0
+        self._processed_indices = set()  # Track which queue indices have been processed
+        self._mapped_queue_indices = set()  # Track which queue indices have been mapped to tabs
         self.account_prompts = {}
         self.account_prompt_idx = {}
         self.tab_current_idx = {}
         
         # Setup queue table — 4 columns: #, Prompt, Ảnh, Trạng thái
         self.queue_table.setRowCount(total)
-        for i, (prompt, img_path) in enumerate(all_items):
+        for i, item in enumerate(all_items):
+            prompt = item[0]
+            img_path = item[1]
             self.queue_table.setItem(i, 0, QTableWidgetItem(str(i+1)))
             self.queue_table.setItem(i, 1, QTableWidgetItem(prompt[:50]))
             # Thumbnail ảnh nhỏ thay vì text
@@ -1200,18 +1380,16 @@ class VideoGenTab(QWidget):
         
         num_tabs = 3  # Fixed: 3 tabs per account
         
-        # Distribute items: chia block liên tục cho mỗi account, KHÔNG có gap
-        # VD: 12 items, 3 accounts → acc0: [0,1,2,3], acc1: [4,5,6,7], acc2: [8,9,10,11]
+        # Distribute items: round-robin cho mỗi account
+        # VD: 9 items, 3 accounts → acc0: [1,4,7], acc1: [2,5,8], acc2: [3,6,9]
         n_acc = len(accounts)
-        base_count = total // n_acc
-        remainder = total % n_acc
-        
-        offset = 0
-        for i, acc in enumerate(accounts):
-            count = base_count + (1 if i < remainder else 0)
-            self.account_prompts[acc.email] = all_items[offset:offset + count]
-            self.account_prompt_idx[acc.email] = list(range(offset, offset + count))
-            offset += count
+        for acc in accounts:
+            self.account_prompts[acc.email] = []
+            self.account_prompt_idx[acc.email] = []
+        for i, item in enumerate(all_items):
+            acc = accounts[i % n_acc]
+            self.account_prompts[acc.email].append(item)
+            self.account_prompt_idx[acc.email].append(i)
         
         total_concurrent = len(accounts) * num_tabs
         self._log(f"🚀 Starting {total} videos ({mode_label})")
@@ -1257,7 +1435,7 @@ class VideoGenTab(QWidget):
         
         # Create and start worker — pass items directly (tuples supported by generate_batch)
         worker = AccountWorker(
-            account, items, settings,
+            account, items, settings, self._output_dir,
             num_tabs=num_tabs,
             headless=True
         )
@@ -1325,15 +1503,23 @@ class VideoGenTab(QWidget):
         tab_num = int(tab_match.group(1)) - 1
         tab_key = f"{email}:{tab_num}"
         
+        # Initialize mapped indices tracking if not exists
+        if not hasattr(self, '_mapped_queue_indices'):
+            self._mapped_queue_indices = set()
+        
         # Detect "Starting:" → map tab to prompt by matching text
         start_match = re.search(r'(?:Starting|Retrying[^:]*): (.+?)\.\.\.', msg)
         if start_match:
             prompt_prefix = start_match.group(1).strip()[:20]
             for qi in indices:
+                # Skip already mapped indices
+                if qi in self._mapped_queue_indices:
+                    continue
                 if qi < self.queue_table.rowCount():
                     queue_item = self.queue_table.item(qi, 1)
                     if queue_item and queue_item.text()[:20] == prompt_prefix:
                         self.tab_current_idx[tab_key] = qi
+                        self._mapped_queue_indices.add(qi)
                         break
         
         # Get mapped queue index
@@ -1401,26 +1587,37 @@ class VideoGenTab(QWidget):
     def _on_task_completed(self, email, task):
         """Handle individual task completion.
         
-        Tìm queue index bằng prompt text match (không pop list để tránh index drift).
+        Tìm queue index bằng prompt text match, skip những item đã xử lý.
         """
+        # Initialize processed tracking if not exists
+        if not hasattr(self, '_processed_indices'):
+            self._processed_indices = set()
+        
         # Find the queue index for this prompt by text match
         idx = -1
         if email in self.account_prompt_idx:
             items_list = self.account_prompts.get(email, [])
             indices_list = self.account_prompt_idx.get(email, [])
             for i, (item, qi) in enumerate(zip(items_list, indices_list)):
+                # Skip already processed indices
+                if qi in self._processed_indices:
+                    continue
                 # item can be (prompt, image) tuple or str
                 p = item[0] if isinstance(item, tuple) else item
                 if p == task.prompt:
                     idx = qi
+                    self._processed_indices.add(qi)
                     break
         
-        # Fallback: search queue table by prompt text
+        # Fallback: search queue table by prompt text (skip processed)
         if idx < 0:
             for qi in range(self.queue_table.rowCount()):
+                if qi in self._processed_indices:
+                    continue
                 queue_item = self.queue_table.item(qi, 1)
                 if queue_item and queue_item.text() == task.prompt[:50]:
                     idx = qi
+                    self._processed_indices.add(qi)
                     break
         
         # Update queue table (status is column 3 now)

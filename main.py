@@ -79,8 +79,8 @@ def main():
     # 3. Log startup info (debug cho EXE)
     try:
         import platform
+        import datetime
         with open(os.path.join("data", "startup.log"), "w", encoding="utf-8") as f:
-            import datetime
             f.write(f"[{datetime.datetime.now().isoformat()}] App starting\n")
             f.write(f"  app_dir: {app_dir}\n")
             f.write(f"  cwd: {os.getcwd()}\n")
@@ -93,21 +93,52 @@ def main():
                 f.write(f"  __nuitka_binary_dir: {nbd}\n")
             except NameError:
                 f.write(f"  __nuitka_binary_dir: N/A (dev mode)\n")
+            # Log data dir contents
+            f.write(f"  data/ exists: {os.path.isdir('data')}\n")
+            f.write(f"  data/accounts.json exists: {os.path.isfile('data/accounts.json')}\n")
+            f.write(f"  data/.key exists: {os.path.isfile('data/.key')}\n")
     except Exception:
         pass
 
-    # 4. Import và chạy app
-    from PySide6.QtWidgets import QApplication, QDialog
-    from src.gui.login_dialog import AppLoginDialog
-    from src.gui import MainWindow
+    # 4. Import và chạy app — bắt lỗi import riêng để debug
+    try:
+        from PySide6.QtWidgets import QApplication, QDialog
+    except Exception as e:
+        write_crash_log(f"PySide6 import failed: {e}")
+        show_error_box("Lỗi PySide6", f"Không thể import PySide6:\n{e}")
+        sys.exit(1)
 
+    # Tạo QApplication TRƯỚC để có thể hiện MessageBox nếu import sau fail
     app = QApplication(sys.argv)
     app.setApplicationName("X Grok Video Generator")
+
+    try:
+        from src.gui.login_dialog import AppLoginDialog
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
+        write_crash_log(f"Login dialog import failed:\n{err}")
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "Lỗi khởi động",
+                             f"Không thể load Login Dialog:\n\n{e}\n\nXem file crash.log")
+        sys.exit(1)
 
     # Hiện form đăng nhập app trước
     login = AppLoginDialog()
     if login.exec() != QDialog.Accepted:
         sys.exit(0)
+
+    # Import MainWindow SAU khi login OK — nặng hơn, nhiều dependency hơn
+    try:
+        from src.gui import MainWindow
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
+        write_crash_log(f"MainWindow import failed:\n{err}")
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "Lỗi khởi động",
+                             f"Không thể load MainWindow:\n\n{e}\n\nXem file crash.log")
+        sys.exit(1)
 
     # Đăng nhập OK → hiện MainWindow
     window = MainWindow()

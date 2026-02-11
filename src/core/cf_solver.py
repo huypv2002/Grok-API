@@ -187,8 +187,13 @@ class CloudflareSolver:
         
         self._headless = headless
         self._user_agent = user_agent or FIXED_USER_AGENT
+        self._timeout = timeout
+        self._config = None
+        self.driver = None  # Lazy init - tạo trong async context
         
-        config = zendriver.Config(headless=headless)
+    def _build_config(self):
+        """Build zendriver config - gọi trước khi tạo Browser"""
+        config = zendriver.Config(headless=self._headless)
         config.add_argument(f"--user-agent={self._user_agent}")
         config.add_argument("--mute-audio")
         
@@ -196,7 +201,7 @@ class CloudflareSolver:
         # Quan trọng cho Windows headless — macOS cũng không hại gì
         config.add_argument("--disable-blink-features=AutomationControlled")
         
-        if headless:
+        if self._headless:
             # Window size cho headless (tránh viewport 0x0)
             config.add_argument("--window-size=1920,1080")
             
@@ -218,10 +223,17 @@ class CloudflareSolver:
                 config.add_argument("--use-gl=swiftshader")
                 config.add_argument("--use-angle=swiftshader-webgl")
         
-        self.driver = zendriver.Browser(config)
-        self._timeout = timeout
+        return config
+    
+    async def ensure_browser(self):
+        """Ensure browser is created - MUST call in async context"""
+        if self.driver is None:
+            config = self._build_config()
+            self.driver = zendriver.Browser(config)
+        return self.driver
 
     async def __aenter__(self) -> CloudflareSolver:
+        await self.ensure_browser()
         await self.driver.start()
         # Inject stealth patches TRƯỚC mọi navigation
         await self._inject_stealth_patches()
