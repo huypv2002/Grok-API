@@ -5,9 +5,10 @@ import random
 import hashlib
 import platform
 import uuid
+import traceback
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QApplication
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QApplication, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer, QPointF, QThread, Signal
 from PySide6.QtGui import QFont, QPainter, QLinearGradient, QRadialGradient, QColor, QPen
@@ -39,20 +40,29 @@ class AuthWorker(QThread):
         self.machine_id = get_machine_id()
 
     def run(self):
-        import httpx
+        try:
+            import httpx
+        except ImportError as e:
+            self.finished.emit(False, f"Thiếu thư viện httpx: {e}")
+            return
+            
         try:
             r = httpx.post(AUTH_API_URL, json={
                 "username": self.username,
                 "password": self.password,
                 "machine_id": self.machine_id
-            }, timeout=10)
+            }, timeout=15)
             data = r.json()
             if data.get("ok"):
                 self.finished.emit(True, "")
             else:
                 self.finished.emit(False, data.get("error", "Sai tài khoản hoặc mật khẩu"))
+        except httpx.ConnectError:
+            self.finished.emit(False, "Không thể kết nối server. Kiểm tra mạng.")
+        except httpx.TimeoutException:
+            self.finished.emit(False, "Hết thời gian chờ. Thử lại sau.")
         except Exception as e:
-            self.finished.emit(False, f"Lỗi kết nối: {e}")
+            self.finished.emit(False, f"Lỗi: {e}")
 
 
 class _Star:

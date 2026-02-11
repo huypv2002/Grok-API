@@ -120,13 +120,23 @@ def main():
         write_crash_log(f"Login dialog import failed:\n{err}")
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.critical(None, "Lỗi khởi động",
-                             f"Không thể load Login Dialog:\n\n{e}\n\nXem file crash.log")
+                             f"Không thể load Login Dialog:\n\n{e}\n\nXem file crash.log để biết chi tiết.")
         sys.exit(1)
 
     # Hiện form đăng nhập app trước
-    login = AppLoginDialog()
-    if login.exec() != QDialog.Accepted:
-        sys.exit(0)
+    try:
+        login = AppLoginDialog()
+        result = login.exec()
+        if result != QDialog.Accepted:
+            sys.exit(0)
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
+        write_crash_log(f"Login dialog exec failed:\n{err}")
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "Lỗi đăng nhập",
+                             f"Lỗi khi hiện form đăng nhập:\n\n{e}\n\nXem file crash.log")
+        sys.exit(1)
 
     # Import MainWindow SAU khi login OK — nặng hơn, nhiều dependency hơn
     try:
