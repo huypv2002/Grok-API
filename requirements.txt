@@ -13,3 +13,4 @@ user-agents
 chromedriver-autoinstaller
 requests
 setuptools
+curl_cffi>=0.7.0

@@ -36,7 +36,6 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [OK] Dependencies installed.
-echo.
 
 :: Step 2: Verify imports
 echo [2/4] Kiem tra imports...
@@ -61,6 +60,10 @@ if exist "%GRAPHEME_DIR%\data" (
 ) else (
     echo [WARN] grapheme/data NOT found, build may fail
 )
+
+:: Find curl_cffi dir (contains native .dll)
+for /f "delims=" %%p in ('python -c "import curl_cffi,os; print(os.path.dirname(curl_cffi.__file__))"') do set CURL_CFFI_DIR=%%p
+echo curl_cffi dir: %CURL_CFFI_DIR%
 echo.
 
 :: Step 4: Build with Nuitka
@@ -79,7 +82,6 @@ python -m nuitka ^
     --include-package=src ^
     --include-package=src.core ^
     --include-package=src.gui ^
-    --include-package=src.utils ^
     --include-package=httpx ^
     --include-package=httpcore ^
     --include-package=anyio ^
@@ -87,6 +89,7 @@ python -m nuitka ^
     --include-package=requests ^
     --include-package=urllib3 ^
     --include-package=charset_normalizer ^
+    --include-package=curl_cffi ^
     --include-package=pydantic ^
     --include-package=pydantic.deprecated ^
     --include-package=cryptography ^
@@ -117,6 +120,8 @@ python -m nuitka ^
     --include-module=platform ^
     --include-module=hashlib ^
     --include-module=base64 ^
+    --include-module=PySide6.QtMultimedia ^
+    --include-module=PySide6.QtMultimediaWidgets ^
     --include-package-data=PySide6 ^
     --include-package-data=certifi ^
     --include-package-data=cryptography ^
@@ -124,6 +129,7 @@ python -m nuitka ^
     --include-package-data=zendriver ^
     --include-package-data=emoji ^
     --include-package-data=grapheme ^
+    --include-package-data=curl_cffi ^
     --include-package-data=charset_normalizer ^
     --include-package-data=selenium ^
     --include-package-data=undetected_chromedriver ^
@@ -132,6 +138,7 @@ python -m nuitka ^
     --include-package-data=user_agents ^
     --include-package-data=chromedriver_autoinstaller ^
     --include-data-dir="%GRAPHEME_DIR%\data=grapheme/data" ^
+    --include-data-dir="%CURL_CFFI_DIR%=curl_cffi" ^
     --nofollow-import-to=tkinter ^
     --nofollow-import-to=_tkinter ^
     --nofollow-import-to=PyQt6 ^

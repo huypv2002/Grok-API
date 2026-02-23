@@ -53,8 +53,10 @@ jobs:
           errors = []
           modules = [
               'PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui',
+              'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets',
               'httpx', 'httpcore', 'certifi', 'anyio', 'sniffio', 'h11', 'idna',
               'requests', 'urllib3', 'charset_normalizer',
+              'curl_cffi', 'curl_cffi.requests',
               'cryptography', 'cryptography.fernet', 'cffi', '_cffi_backend',
               'pydantic',
               'selenium', 'selenium.webdriver', 'undetected_chromedriver',
@@ -79,7 +81,7 @@ jobs:
               sys.exit(1)
           print(f'\nAll {len(modules)} modules OK!')
           "
-      
+
       - name: Prepare package data paths
         id: pkg_paths
         run: |
@@ -111,6 +113,12 @@ jobs:
           echo "CERTIFI_DIR=$certifi_dir" >> $env:GITHUB_OUTPUT
           echo "certifi dir: $certifi_dir"
 
+          # Get curl_cffi dir (contains .dll/.so native libs)
+          $curl_raw = (python -c "import curl_cffi, os; print(os.path.dirname(curl_cffi.__file__))").Trim()
+          $curl_dir = $curl_raw -replace '\\', '/'
+          echo "CURL_CFFI_DIR=$curl_dir" >> $env:GITHUB_OUTPUT
+          echo "curl_cffi dir: $curl_dir"
+
           # Get CPU count
           $cpu = $env:NUMBER_OF_PROCESSORS
           if (-not $cpu) { $cpu = "4" }
@@ -120,9 +128,11 @@ jobs:
       - name: Build with Nuitka
         run: |
           $grapheme_dir = "${{ steps.pkg_paths.outputs.GRAPHEME_DIR }}"
+          $curl_cffi_dir = "${{ steps.pkg_paths.outputs.CURL_CFFI_DIR }}"
           $cpu = "${{ steps.pkg_paths.outputs.CPU_COUNT }}"
           echo "Building with $cpu jobs..."
           echo "grapheme_dir = $grapheme_dir"
+          echo "curl_cffi_dir = $curl_cffi_dir"
 
           python -m nuitka `
             --standalone `
@@ -134,7 +144,6 @@ jobs:
             --include-package=src `
             --include-package=src.core `
             --include-package=src.gui `
-            --include-package=src.utils `
             --include-package=httpx `
             --include-package=httpcore `
             --include-package=anyio `
@@ -142,6 +151,7 @@ jobs:
             --include-package=requests `
             --include-package=urllib3 `
             --include-package=charset_normalizer `
+            --include-package=curl_cffi `
             --include-package=pydantic `
             --include-package=pydantic.deprecated `
             --include-package=cryptography `
@@ -172,6 +182,8 @@ jobs:
             --include-module=platform `
             --include-module=hashlib `
             --include-module=base64 `
+            --include-module=PySide6.QtMultimedia `
+            --include-module=PySide6.QtMultimediaWidgets `
             --include-package-data=PySide6 `
             --include-package-data=certifi `
             --include-package-data=cryptography `
@@ -179,6 +191,7 @@ jobs:
             --include-package-data=zendriver `
             --include-package-data=emoji `
             --include-package-data=grapheme `
+            --include-package-data=curl_cffi `
             --include-package-data=selenium `
             --include-package-data=undetected_chromedriver `
             --include-package-data=setuptools `
@@ -186,6 +199,7 @@ jobs:
             --include-package-data=user_agents `
             --include-package-data=chromedriver_autoinstaller `
             --include-data-dir="$grapheme_dir/data=grapheme/data" `
+            --include-data-dir="$curl_cffi_dir=curl_cffi" `
             --nofollow-import-to=tkinter `
             --nofollow-import-to=_tkinter `
             --nofollow-import-to=PyQt6 `
@@ -206,7 +220,7 @@ jobs:
             --no-pyi-file `
             --assume-yes-for-downloads `
             main.py
-      
+
       - name: Verify output
         run: |
           if (Test-Path "GrokVideoGenerator.exe") {

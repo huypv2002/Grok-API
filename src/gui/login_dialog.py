@@ -82,7 +82,8 @@ def _get_or_create_machine_id() -> str:
 
 class AuthWorker(QThread):
     """Worker xác thực qua D1 API."""
-    finished = Signal(bool, str)
+    # ok, error_msg, plan, expires_at
+    finished = Signal(bool, str, str, str)
 
     def __init__(self, username, password):
         super().__init__()
@@ -94,7 +95,7 @@ class AuthWorker(QThread):
         try:
             import httpx
         except ImportError as e:
-            self.finished.emit(False, f"Thiếu thư viện httpx: {e}")
+            self.finished.emit(False, f"Thiếu thư viện httpx: {e}", "", "")
             return
             
         try:
@@ -104,16 +105,28 @@ class AuthWorker(QThread):
                 "machine_id": self.machine_id
             }, timeout=15)
             data = r.json()
+            plan = data.get("plan", "")
+            expires_at = data.get("expires_at", "")
             if data.get("ok"):
-                self.finished.emit(True, "")
+                # Check hết hạn ngay tại client
+                if expires_at:
+                    from datetime import date
+                    try:
+                        exp_date = date.fromisoformat(expires_at)
+                        if exp_date < date.today():
+                            self.finished.emit(False, f"Gói của bạn đã hết hạn ngày {expires_at}. Liên hệ admin để gia hạn.", plan, expires_at)
+                            return
+                    except ValueError:
+                        pass
+                self.finished.emit(True, "", plan, expires_at)
             else:
-                self.finished.emit(False, data.get("error", "Sai tài khoản hoặc mật khẩu"))
+                self.finished.emit(False, data.get("error", "Sai tài khoản hoặc mật khẩu"), plan, expires_at)
         except httpx.ConnectError:
-            self.finished.emit(False, "Không thể kết nối server. Kiểm tra mạng.")
+            self.finished.emit(False, "Không thể kết nối server. Kiểm tra mạng.", "", "")
         except httpx.TimeoutException:
-            self.finished.emit(False, "Hết thời gian chờ. Thử lại sau.")
+            self.finished.emit(False, "Hết thời gian chờ. Thử lại sau.", "", "")
         except Exception as e:
-            self.finished.emit(False, f"Lỗi: {e}")
+            self.finished.emit(False, f"Lỗi: {e}", "", "")
 
 
 class _Star:
@@ -356,12 +369,14 @@ class AppLoginDialog(QDialog):
             except Exception:
                 pass
 
-    def _save_temp(self, username, password):
-        """Lưu tk/mk plain text vào login_temp.json."""
+    def _save_temp(self, username, password, plan="", expires_at=""):
+        """Lưu tk/mk + plan/expires_at vào login_temp.json."""
         LOGIN_TEMP_FILE.parent.mkdir(parents=True, exist_ok=True)
         LOGIN_TEMP_FILE.write_text(json.dumps({
             "username": username,
-            "password": password
+            "password": password,
+            "plan": plan,
+            "expires_at": expires_at
         }, indent=2))
 
     def _on_login(self):
@@ -377,15 +392,17 @@ class AppLoginDialog(QDialog):
         self.error_label.setText("")
 
         self._worker = AuthWorker(username, password)
-        self._worker.finished.connect(lambda ok, err: self._on_auth_done(ok, err, username, password))
+        self._worker.finished.connect(lambda ok, err, plan, exp: self._on_auth_done(ok, err, plan, exp, username, password))
         self._worker.start()
 
-    def _on_auth_done(self, ok, error, username, password):
+    def _on_auth_done(self, ok, error, plan, expires_at, username, password):
         self.login_btn.setEnabled(True)
         self.login_btn.setText("🔑 Đăng nhập")
 
+        # Luôn lưu tk/mk để lần sau tự fill
+        self._save_temp(username, password, plan, expires_at)
+
         if ok:
-            self._save_temp(username, password)
             self.accept()
         else:
             self.error_label.setText(f"❌ {error}")
