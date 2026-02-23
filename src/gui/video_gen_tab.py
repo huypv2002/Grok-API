@@ -10,14 +10,109 @@ from PySide6.QtWidgets import (
     QTextEdit, QComboBox, QPushButton, QMessageBox, QCheckBox,
     QFileDialog, QLabel, QTableWidget, QTableWidgetItem, QLineEdit,
     QHeaderView, QSplitter, QFrame, QTabWidget, QProgressBar, QScrollArea,
-    QButtonGroup, QRadioButton, QListWidget, QListWidgetItem
+    QButtonGroup, QRadioButton, QListWidget, QListWidgetItem, QDialog, QSlider
 )
-from PySide6.QtCore import Signal, QThread, Qt, QTimer, QTime, QSize
+from PySide6.QtCore import Signal, QThread, Qt, QTimer, QTime, QSize, QUrl
 from PySide6.QtGui import QColor, QFont, QPixmap, QIcon
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtMultimediaWidgets import QVideoWidget
 
 from ..core.account_manager import AccountManager
 from ..core.video_generator import VideoGenerator, MultiTabVideoGenerator, ZENDRIVER_AVAILABLE
 from ..core.history_manager import HistoryManager
+from ..core.grok_api import GrokAPI, VIDEO_DOWNLOAD_URL
+
+
+class VideoPreviewDialog(QDialog):
+    """Dialog xem trước video đã download."""
+    def __init__(self, video_path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"▶ {os.path.basename(video_path)}")
+        self.setMinimumSize(640, 420)
+        self.resize(720, 480)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Video widget
+        self.video_widget = QVideoWidget()
+        layout.addWidget(self.video_widget, stretch=1)
+
+        # Controls bar
+        ctrl = QHBoxLayout()
+        ctrl.setContentsMargins(10, 6, 10, 6)
+        ctrl.setSpacing(8)
+
+        self.play_btn = QPushButton("⏸")
+        self.play_btn.setFixedSize(36, 28)
+        self.play_btn.setCursor(Qt.PointingHandCursor)
+        self.play_btn.clicked.connect(self._toggle_play)
+        ctrl.addWidget(self.play_btn)
+
+        self.pos_label = QLabel("0:00")
+        self.pos_label.setFixedWidth(40)
+        self.pos_label.setAlignment(Qt.AlignCenter)
+        ctrl.addWidget(self.pos_label)
+
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 0)
+        self.slider.sliderMoved.connect(self._seek)
+        ctrl.addWidget(self.slider, stretch=1)
+
+        self.dur_label = QLabel("0:00")
+        self.dur_label.setFixedWidth(40)
+        self.dur_label.setAlignment(Qt.AlignCenter)
+        ctrl.addWidget(self.dur_label)
+
+        layout.addLayout(ctrl)
+
+        # Style
+        self.setStyleSheet("""
+            QDialog { background: #111; }
+            QPushButton { background: #333; color: white; border: none; border-radius: 4px; font-size: 14px; }
+            QPushButton:hover { background: #555; }
+            QLabel { color: #ccc; font-size: 11px; }
+            QSlider::groove:horizontal { background: #333; height: 4px; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #3498db; width: 12px; margin: -4px 0; border-radius: 6px; }
+            QSlider::sub-page:horizontal { background: #3498db; border-radius: 2px; }
+        """)
+
+        # Player
+        self.player = QMediaPlayer()
+        self.audio = QAudioOutput()
+        self.player.setAudioOutput(self.audio)
+        self.player.setVideoOutput(self.video_widget)
+        self.player.durationChanged.connect(self._on_duration)
+        self.player.positionChanged.connect(self._on_position)
+        self.player.setSource(QUrl.fromLocalFile(video_path))
+        self.player.play()
+
+    def _toggle_play(self):
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.player.pause()
+            self.play_btn.setText("▶")
+        else:
+            self.player.play()
+            self.play_btn.setText("⏸")
+
+    def _seek(self, pos):
+        self.player.setPosition(pos)
+
+    def _on_duration(self, dur):
+        self.slider.setRange(0, dur)
+        s = dur // 1000
+        self.dur_label.setText(f"{s // 60}:{s % 60:02d}")
+
+    def _on_position(self, pos):
+        if not self.slider.isSliderDown():
+            self.slider.setValue(pos)
+        s = pos // 1000
+        self.pos_label.setText(f"{s // 60}:{s % 60:02d}")
+
+    def closeEvent(self, event):
+        self.player.stop()
+        super().closeEvent(event)
 
 
 class NoScrollComboBox(QComboBox):
@@ -117,6 +212,342 @@ class AccountWorker(QThread):
         self._stopped = True
         if self._generator:
             self._generator._running = False
+
+
+class APIAccountWorker(QThread):
+    """
+    Worker dùng GrokAPI (curl_cffi) thay vì zendriver browser.
+    Nhanh hơn, không cần browser, chỉ cần cookies.
+    Hỗ trợ multi-thread concurrent (num_tabs video cùng lúc).
+    """
+    status_update = Signal(str, str)  # email, message
+    task_completed = Signal(str, object)  # email, VideoTask
+    step_progress = Signal(str, int, int)  # email, queue_index, percent (0-100)
+    all_finished = Signal(str)  # email
+
+    def __init__(self, account, prompts, settings, output_dir, num_tabs=3, headless=True):
+        super().__init__()
+        self.account = account
+        self.prompts = prompts  # list of (prompt, image_path, subfolder, stt)
+        self.settings = settings
+        self.output_dir = output_dir
+        self.num_tabs = num_tabs
+        self._stopped = False
+
+    def run(self):
+        if self._stopped:
+            return
+
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        email = self.account.email
+        cookies = dict(self.account.cookies) if self.account.cookies else {}
+
+        if not cookies.get("sso") or not cookies.get("sso-rw"):
+            self.status_update.emit(email, "❌ Thiếu cookies (sso/sso-rw) — cần đăng nhập lại")
+            self.all_finished.emit(email)
+            return
+
+        total = len(self.prompts)
+        self.status_update.emit(
+            email,
+            f"🚀 Bắt đầu {total} video qua API — {self.num_tabs} luồng"
+            f" | {self.settings.aspect_ratio} {self.settings.video_length}s {self.settings.resolution}"
+        )
+
+        try:
+            with ThreadPoolExecutor(max_workers=self.num_tabs) as pool:
+                futures = {}
+                for i, item in enumerate(self.prompts):
+                    if self._stopped:
+                        break
+                    fut = pool.submit(self._process_one, cookies, item, i, total)
+                    futures[fut] = i
+                    # Stagger delay 4s giữa các task — tránh 429 rate limit
+                    if i < total - 1:
+                        time.sleep(4)
+
+                for fut in as_completed(futures):
+                    if self._stopped:
+                        break
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        idx = futures[fut]
+                        self.status_update.emit(email, f"❌ [{idx+1}/{total}] Error: {e}")
+
+        except Exception as e:
+            self.status_update.emit(email, f"❌ Error: {e}")
+
+        self.all_finished.emit(email)
+
+    def _process_one(self, cookies, item, idx, total):
+        """Xử lý 1 video — chạy trong thread pool.
+
+        Hỗ trợ 2 mode:
+        - Text→Video: create_media_post → conversations_new → share_link → download
+        - Image→Video: upload → check_asset → update_settings → conversations_new → share_link → download
+
+        Steps & progress:
+          5% = bắt đầu
+         20% = create media post / upload image
+         50% = conversations new (render)
+         70% = create share link
+         90% = downloading
+        100% = done
+        """
+        import time
+
+        email = self.account.email
+        if self._stopped:
+            return
+
+        prompt = item[0] if isinstance(item, tuple) else item
+        image_path = item[1] if isinstance(item, tuple) and len(item) > 1 else None
+        subfolder = item[2] if isinstance(item, tuple) and len(item) > 2 else None
+        stt = item[3] if isinstance(item, tuple) and len(item) > 3 else idx + 1
+
+        is_image_mode = bool(image_path)
+
+        from ..core.models import VideoTask
+        task = VideoTask(
+            account_email=email,
+            prompt=prompt,
+            image_path=image_path,
+            settings=self.settings,
+            status="creating",
+        )
+
+        mode_label = "🖼️ Img→Vid" if is_image_mode else "📝 Txt→Vid"
+        self.step_progress.emit(email, idx, 5)
+        self.status_update.emit(email, f"[{idx+1}/{total}] {mode_label} 📤 {prompt[:40]}...")
+        self.status_update.emit(email, f"   ⚙️ Settings: {self.settings.aspect_ratio}, {self.settings.video_length}s, {self.settings.resolution}")
+
+        api = GrokAPI()
+        try:
+            if is_image_mode:
+                # ===== IMAGE-TO-VIDEO FLOW =====
+                # Step 1a: Upload image
+                self.step_progress.emit(email, idx, 10)
+                self.status_update.emit(email, f"   📤 Uploading image: {Path(image_path).name}...")
+                file_id = api.upload_image(
+                    cookies=cookies,
+                    image_path=image_path,
+                    on_status=lambda msg, e=email: self.status_update.emit(e, msg),
+                )
+                if not file_id:
+                    task.status = "failed"
+                    task.error_message = "Upload image failed"
+                    self.step_progress.emit(email, idx, -1)
+                    self.task_completed.emit(email, task)
+                    return
+
+                # Step 1b: Check asset ready
+                self.step_progress.emit(email, idx, 13)
+                self.status_update.emit(email, f"   🔍 Checking asset ready...")
+                asset_ok = api.check_asset_ready(
+                    cookies=cookies,
+                    file_id=file_id,
+                    max_retries=10,
+                    delay=2.0,
+                    on_status=lambda msg, e=email: self.status_update.emit(e, msg),
+                )
+                if not asset_ok:
+                    task.status = "failed"
+                    task.error_message = "Asset not ready after upload"
+                    self.step_progress.emit(email, idx, -1)
+                    self.task_completed.emit(email, task)
+                    return
+
+                # Step 1c: Update user settings
+                self.step_progress.emit(email, idx, 16)
+                api.update_user_settings(
+                    cookies=cookies,
+                    disable_auto_video=True,
+                    on_status=lambda msg, e=email: self.status_update.emit(e, msg),
+                )
+
+                # Step 1d: Create media post (lấy parentPostId cho share link)
+                self.step_progress.emit(email, idx, 18)
+                parent_id = api.create_media_post(
+                    cookies=cookies,
+                    prompt=prompt or "image to video",
+                    on_status=lambda msg, e=email: self.status_update.emit(e, msg),
+                )
+                if not parent_id:
+                    task.status = "failed"
+                    task.error_message = "Create media post failed"
+                    self.step_progress.emit(email, idx, -1)
+                    self.task_completed.emit(email, task)
+                    return
+
+                time.sleep(0.5)
+
+                # Step 2: Conversations new with fileAttachments + parentPostId
+                self.step_progress.emit(email, idx, 20)
+                user_id = cookies.get("x-userid", "")
+                post_id = api.conversations_new(
+                    cookies=cookies,
+                    prompt=prompt,
+                    parent_post_id=parent_id,
+                    aspect_ratio=self.settings.aspect_ratio,
+                    video_length=self.settings.video_length,
+                    resolution=self.settings.resolution,
+                    on_status=lambda msg, e=email: self.status_update.emit(e, msg),
+                    on_progress=lambda pct, e=email, i=idx: self.step_progress.emit(e, i, pct),
+                    file_attachment_id=file_id,
+                    user_id=user_id,
+                )
+            else:
+                # ===== TEXT-TO-VIDEO FLOW =====
+                # Step 1: Create media post
+                self.step_progress.emit(email, idx, 20)
+                parent_id = api.create_media_post(
+                    cookies=cookies,
+                    prompt=prompt,
+                    on_status=lambda msg, e=email: self.status_update.emit(e, msg),
+                )
+                if not parent_id:
+                    task.status = "failed"
+                    task.error_message = "Create media post failed"
+                    self.step_progress.emit(email, idx, -1)
+                    self.task_completed.emit(email, task)
+                    return
+
+                time.sleep(1)
+
+                # Step 2: Conversations new → postId
+                self.step_progress.emit(email, idx, 50)
+                post_id = api.conversations_new(
+                    cookies=cookies,
+                    prompt=prompt,
+                    parent_post_id=parent_id,
+                    aspect_ratio=self.settings.aspect_ratio,
+                    video_length=self.settings.video_length,
+                    resolution=self.settings.resolution,
+                    on_status=lambda msg, e=email: self.status_update.emit(e, msg),
+                    on_progress=lambda pct, e=email, i=idx: self.step_progress.emit(e, i, pct),
+                )
+
+            # === Common: check postId ===
+            if not post_id:
+                task.status = "failed"
+                task.error_message = "Conversations new failed — không tìm thấy postId"
+                self.step_progress.emit(email, idx, -1)
+                self.task_completed.emit(email, task)
+                return
+
+            # === Step 3: Create share link (retry — đợi video render xong) ===
+            self.step_progress.emit(email, idx, 70)
+            share_ok = api.create_share_link(
+                cookies=cookies,
+                post_id=post_id,
+                on_status=lambda msg, e=email: self.status_update.emit(e, msg),
+                max_retries=10,
+                delay=5.0,
+            )
+
+            # === Step 4: Download video ===
+            self.step_progress.emit(email, idx, 90)
+            video_url = VIDEO_DOWNLOAD_URL.format(post_id=post_id)
+            output_path = None
+
+            if share_ok:
+                # Thử download, retry nếu chưa sẵn sàng
+                for attempt in range(1, 5):
+                    output_path = self._download_video(cookies, post_id, video_url, subfolder, stt, prompt)
+                    if output_path:
+                        break
+                    self.status_update.emit(email, f"   ⏳ Video chưa sẵn sàng, retry {attempt}/4 sau 5s...")
+                    time.sleep(5)
+            else:
+                self.status_update.emit(email, f"   ⚠️ Share link failed, thử download trực tiếp...")
+                output_path = self._download_video(cookies, post_id, video_url, subfolder, stt, prompt)
+
+            task.post_id = post_id
+            task.media_url = video_url
+            task.status = "completed"
+            task.completed_at = datetime.now()
+            task.account_cookies = cookies
+            if output_path:
+                task.output_path = output_path
+
+            self.step_progress.emit(email, idx, 100)
+            self.status_update.emit(email, f"[{idx+1}/{total}] ✅ {post_id[:12]}...")
+            self.task_completed.emit(email, task)
+
+        except Exception as e:
+            task.status = "failed"
+            task.error_message = str(e)
+            self.step_progress.emit(email, idx, -1)
+            self.task_completed.emit(email, task)
+            raise
+        finally:
+            api.close()
+
+
+    def _download_video(self, cookies, post_id, video_url, subfolder, stt, prompt):
+        """Download video qua curl_cffi — không cần browser."""
+        try:
+            from curl_cffi import requests as curl_requests
+        except ImportError:
+            self.status_update.emit(self.account.email, "⚠️ curl_cffi not installed, skip download")
+            return None
+
+        try:
+            from ..core.grok_api import USER_AGENT
+            # Detect nếu là assets.grok.com → dùng Referer khác
+            is_assets = "assets.grok.com" in video_url
+            headers = {
+                "User-Agent": USER_AGENT,
+                "Accept": "*/*",
+                "Referer": "https://grok.com/",
+                "Origin": "https://grok.com",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site" if is_assets else "cross-site",
+            }
+            cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
+
+            resp = curl_requests.get(
+                video_url,
+                headers={**headers, "Cookie": cookie_str},
+                impersonate="chrome133a",
+                timeout=120,
+            )
+
+            content_len = len(resp.content) if resp.content else 0
+
+            if resp.status_code == 200 and content_len > 10000:
+                # Xác định output path
+                base = Path(self.output_dir)
+                if subfolder:
+                    base = base / subfolder
+                base.mkdir(parents=True, exist_ok=True)
+
+                # Tên file: stt_prompt_postid.mp4
+                safe_prompt = re.sub(r'[^\w\s-]', '', prompt[:30]).strip().replace(' ', '_')
+                filename = f"{stt:03d}_{safe_prompt}_{post_id[:8]}.mp4"
+                filepath = base / filename
+
+                with open(filepath, "wb") as f:
+                    f.write(resp.content)
+
+                size_mb = content_len / (1024 * 1024)
+                self.status_update.emit(self.account.email, f"📥 Downloaded: {filename} ({size_mb:.1f}MB)")
+                return str(filepath)
+            else:
+                self.status_update.emit(self.account.email,
+                    f"⚠️ Download failed: status={resp.status_code} size={content_len}")
+                return None
+
+        except Exception as e:
+            self.status_update.emit(self.account.email, f"⚠️ Download error: {e}")
+            return None
+
+    def stop(self):
+        self._stopped = True
 
 
 class VideoWorker(QThread):
@@ -513,6 +944,18 @@ class VideoGenTab(QWidget):
         
         left_layout.addLayout(form)
         
+        # SuperGrok warning label
+        self.supergrok_warn = QLabel("⚠️ 10 giây / 720p cần SuperGrok. Account free sẽ tự động dùng 6s + 480p.")
+        self.supergrok_warn.setFont(QFont("Segoe UI", 8))
+        self.supergrok_warn.setWordWrap(True)
+        self.supergrok_warn.setStyleSheet("color: #FF6B35; padding: 2px 0;")
+        self.supergrok_warn.setVisible(False)
+        left_layout.addWidget(self.supergrok_warn)
+        
+        # Show/hide warning khi thay đổi settings
+        self.length_combo.currentIndexChanged.connect(self._update_supergrok_warning)
+        self.resolution_combo.currentIndexChanged.connect(self._update_supergrok_warning)
+        
         # Accounts
         self.acc_title = QLabel("👤 Tài khoản")
         self.acc_title.setFont(QFont("Segoe UI", 11, QFont.Bold))
@@ -563,11 +1006,11 @@ class VideoGenTab(QWidget):
         queue_l.setContentsMargins(5, 5, 5, 5)
         self.queue_table = QTableWidget()
         self.queue_table.setColumnCount(4)
-        self.queue_table.setHorizontalHeaderLabels(["#", "Prompt", "Ảnh", "Trạng thái"])
+        self.queue_table.setHorizontalHeaderLabels(["#", "Prompt", "Xem", "Trạng thái"])
         self.queue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.queue_table.setColumnWidth(0, 35)
         self.queue_table.setColumnWidth(2, 50)
-        self.queue_table.setColumnWidth(3, 90)
+        self.queue_table.setColumnWidth(3, 120)
         self.queue_table.setIconSize(QSize(40, 40))
         queue_l.addWidget(self.queue_table)
         self.tabs.addTab(queue_w, "📋 Hàng đợi")
@@ -1346,21 +1789,31 @@ class VideoGenTab(QWidget):
             img_path = item[1]
             self.queue_table.setItem(i, 0, QTableWidgetItem(str(i+1)))
             self.queue_table.setItem(i, 1, QTableWidgetItem(prompt[:50]))
-            # Thumbnail ảnh nhỏ thay vì text
-            if img_path and os.path.exists(img_path):
-                pix = QPixmap(img_path)
-                if not pix.isNull():
-                    thumb = pix.scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    img_item = QTableWidgetItem()
-                    img_item.setIcon(QIcon(thumb))
-                    img_item.setToolTip(os.path.basename(img_path))
-                    self.queue_table.setItem(i, 2, img_item)
-                    self.queue_table.setRowHeight(i, 46)
-                else:
-                    self.queue_table.setItem(i, 2, QTableWidgetItem(os.path.basename(img_path)[:10]))
-            else:
-                self.queue_table.setItem(i, 2, QTableWidgetItem(""))
-            self.queue_table.setItem(i, 3, QTableWidgetItem("⏳ Chờ"))
+            # Cột Xem — ban đầu trống, sẽ thêm nút ▶️ khi video download xong
+            self.queue_table.setItem(i, 2, QTableWidgetItem(""))
+            self.queue_table.setItem(i, 3, QTableWidgetItem(""))
+            # Progress bar widget cho cột Trạng thái
+            pbar = QProgressBar()
+            pbar.setRange(0, 100)
+            pbar.setValue(0)
+            pbar.setFixedHeight(20)
+            pbar.setFormat("Chờ")
+            pbar.setAlignment(Qt.AlignCenter)
+            pbar.setStyleSheet("""
+                QProgressBar {
+                    background: rgba(40, 50, 70, 180);
+                    border: 1px solid rgba(100, 150, 255, 50);
+                    border-radius: 4px;
+                    color: white;
+                    font-size: 10px;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3498db, stop:1 #2ecc71);
+                    border-radius: 3px;
+                }
+            """)
+            self.queue_table.setCellWidget(i, 3, pbar)
         
         self.run_table.setRowCount(0)
         self.done_table.setRowCount(0)
@@ -1378,7 +1831,7 @@ class VideoGenTab(QWidget):
         self._start_time = QTime.currentTime()
         self._elapsed_timer.start(1000)
         
-        num_tabs = 3  # Fixed: 3 tabs per account
+        num_tabs = 3  # 3 luồng concurrent per account
         
         # Distribute items: round-robin cho mỗi account
         # VD: 9 items, 3 accounts → acc0: [1,4,7], acc1: [2,5,8], acc2: [3,6,9]
@@ -1423,7 +1876,10 @@ class VideoGenTab(QWidget):
         aspect = self.aspect_combo.currentText()
         length = int(self.length_combo.currentText().split()[0])
         resolution = self.resolution_combo.currentText()
+        
         settings = VideoSettings(aspect_ratio=aspect, video_length=length, resolution=resolution)
+        
+        self._log(f"⚙️ [{account.email[:20]}] Settings: aspect={aspect}, length={length}s, resolution={resolution}")
         
         # Add to running table
         row = self.run_table.rowCount()
@@ -1433,14 +1889,15 @@ class VideoGenTab(QWidget):
         self.run_table.setItem(row, 1, QTableWidgetItem(f"#{idx_list[0]+1}→#{idx_list[-1]+1} ({len(items)} items)"))
         self.run_table.setItem(row, 2, QTableWidgetItem(f"Khởi tạo {num_tabs} tab..."))
         
-        # Create and start worker — pass items directly (tuples supported by generate_batch)
-        worker = AccountWorker(
+        # Create and start worker — API mode (curl_cffi, không cần browser)
+        worker = APIAccountWorker(
             account, items, settings, self._output_dir,
             num_tabs=num_tabs,
             headless=True
         )
         worker.status_update.connect(self._on_account_status)
         worker.task_completed.connect(self._on_task_completed)
+        worker.step_progress.connect(self._on_step_progress)
         worker.all_finished.connect(self._on_account_finished)
         
         self.account_workers[account.email] = worker
@@ -1527,62 +1984,119 @@ class VideoGenTab(QWidget):
         if idx is None or idx >= self.queue_table.rowCount():
             return
         
-        # Don't overwrite completed/failed status
-        current_status = self.queue_table.item(idx, 3)
-        if current_status and current_status.text() in ('✅ Xong', '❌ Lỗi'):
-            return
+        # Don't overwrite completed/failed status — check progress bar
+        pbar = self.queue_table.cellWidget(idx, 3)
+        if isinstance(pbar, QProgressBar):
+            fmt = pbar.format()
+            if fmt in ('✅ Xong', '❌ Lỗi'):
+                return
         
-        # Map message → status
+        # Map message → progress bar format text (progress % handled by step_progress signal)
+        # This is a fallback for status messages not covered by step_progress
         status_text = None
-        status_color = None
         
         if any(kw in msg for kw in ['▶️ Starting', 'Starting:']):
-            status_text = "▶️ Bắt đầu"
-            status_color = "#3498db"
+            status_text = "Bắt đầu..."
         elif '🎬' in msg:
-            status_text = "🎬 Chọn mode"
-            status_color = "#1abc9c"
+            status_text = "Chọn mode..."
         elif '⚙️' in msg:
-            status_text = "⚙️ Cài đặt"
-            status_color = "#9b59b6"
+            status_text = "Cài đặt..."
         elif '✏️' in msg:
-            status_text = "✏️ Nhập prompt"
-            status_color = "#3498db"
+            status_text = "Nhập prompt..."
         elif '📤' in msg:
-            status_text = "📤 Gửi"
-            status_color = "#f39c12"
+            status_text = "Tạo post..."
         elif '✅ Post ID' in msg or '🆔' in msg:
-            status_text = "🆔 Post ID"
-            status_color = "#2ecc71"
+            status_text = "Có Post ID"
         elif 'Rendering' in msg or ('⏳' in msg and 'render' in msg.lower()):
             time_match = re.search(r'\((\d+)s\)', msg)
-            status_text = f"⏳ {time_match.group(1)}s" if time_match else "⏳ Rendering"
-            status_color = "#f39c12"
+            status_text = f"Render {time_match.group(1)}s" if time_match else "Rendering..."
         elif '⏳' in msg and 'video' in msg.lower():
-            status_text = "⏳ Chờ render"
-            status_color = "#f39c12"
+            status_text = "Chờ render..."
         elif '🔗' in msg:
-            status_text = "🔗 Share"
-            status_color = "#9b59b6"
+            status_text = "Share link..."
         elif '📥' in msg:
-            status_text = "📥 Tải xuống"
-            status_color = "#3498db"
-        elif '✅ Downloaded' in msg:
+            status_text = "Tải xuống..."
+        elif '✅ Downloaded' in msg or '✅ Done' in msg:
             status_text = "✅ Xong"
-            status_color = "#27ae60"
-        elif '✅ Done' in msg:
-            status_text = "✅ Xong"
-            status_color = "#27ae60"
         elif '🔄 Ready' in msg:
-            # Tab finished this prompt, ready for next — don't update queue
             return
         
-        if status_text:
-            item = QTableWidgetItem(status_text)
-            if status_color:
-                item.setBackground(QColor(status_color))
-                item.setForeground(QColor("white"))
-            self.queue_table.setItem(idx, 3, item)
+        if status_text and isinstance(pbar, QProgressBar):
+            pbar.setFormat(status_text)
+    
+    def _on_step_progress(self, email, worker_idx, percent):
+        """Handle step progress from worker — update progress bar in queue table.
+        
+        worker_idx = index trong worker's prompts list
+        Cần map sang queue_idx qua account_prompt_idx.
+        percent: 0-100 = progress, -1 = failed
+        """
+        if email not in self.account_prompt_idx:
+            return
+        
+        indices = self.account_prompt_idx.get(email, [])
+        if worker_idx < 0 or worker_idx >= len(indices):
+            return
+        
+        queue_idx = indices[worker_idx]
+        if queue_idx >= self.queue_table.rowCount():
+            return
+        
+        pbar = self.queue_table.cellWidget(queue_idx, 3)
+        if not isinstance(pbar, QProgressBar):
+            return
+        
+        # Step labels
+        step_labels = {
+            0: "Chờ", 5: "Bắt đầu...", 20: "Tạo post...",
+            50: "Rendering...", 70: "Share link...",
+            90: "Tải xuống...", 100: "✅ Xong"
+        }
+        
+        if percent == -1:
+            # Failed
+            pbar.setValue(100)
+            pbar.setFormat("❌ Lỗi")
+            pbar.setStyleSheet("""
+                QProgressBar {
+                    background: rgba(40, 50, 70, 180);
+                    border: 1px solid rgba(231, 76, 60, 100);
+                    border-radius: 4px;
+                    color: white;
+                    font-size: 10px;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background: #e74c3c;
+                    border-radius: 3px;
+                }
+            """)
+        else:
+            pbar.setValue(percent)
+            # Exact match first, then range-based label
+            if percent in step_labels:
+                label = step_labels[percent]
+            elif 50 < percent < 70:
+                label = f"Rendering {percent}%"
+            else:
+                label = f"{percent}%"
+            pbar.setFormat(label)
+            
+            if percent >= 100:
+                pbar.setStyleSheet("""
+                    QProgressBar {
+                        background: rgba(40, 50, 70, 180);
+                        border: 1px solid rgba(39, 174, 96, 100);
+                        border-radius: 4px;
+                        color: white;
+                        font-size: 10px;
+                        text-align: center;
+                    }
+                    QProgressBar::chunk {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #27ae60, stop:1 #2ecc71);
+                        border-radius: 3px;
+                    }
+                """)
     
     def _on_task_completed(self, email, task):
         """Handle individual task completion.
@@ -1620,14 +2134,47 @@ class VideoGenTab(QWidget):
                     self._processed_indices.add(qi)
                     break
         
-        # Update queue table (status is column 3 now)
+        # Update queue table — progress bar widget
         if idx >= 0 and idx < self.queue_table.rowCount():
+            pbar = self.queue_table.cellWidget(idx, 3)
+            
             if task.status == "completed":
-                item = QTableWidgetItem("✅ Xong")
-                item.setBackground(QColor("#27ae60"))
-                item.setForeground(QColor("white"))
-                self.queue_table.setItem(idx, 3, item)
+                if isinstance(pbar, QProgressBar):
+                    pbar.setValue(100)
+                    pbar.setFormat("✅ Xong")
+                    pbar.setStyleSheet("""
+                        QProgressBar {
+                            background: rgba(40, 50, 70, 180);
+                            border: 1px solid rgba(39, 174, 96, 100);
+                            border-radius: 4px;
+                            color: white;
+                            font-size: 10px;
+                            text-align: center;
+                        }
+                        QProgressBar::chunk {
+                            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #27ae60, stop:1 #2ecc71);
+                            border-radius: 3px;
+                        }
+                    """)
                 self.completed_prompts.append(task)
+                
+                # Thêm nút ▶️ preview nếu video đã download
+                if task.output_path and os.path.exists(task.output_path):
+                    preview_btn = QPushButton("▶️")
+                    preview_btn.setFixedSize(36, 24)
+                    preview_btn.setCursor(Qt.PointingHandCursor)
+                    preview_btn.setToolTip(os.path.basename(task.output_path))
+                    preview_btn.setStyleSheet("""
+                        QPushButton {
+                            background: rgba(52, 152, 219, 200);
+                            color: white; border: none; border-radius: 4px;
+                            font-size: 12px;
+                        }
+                        QPushButton:hover { background: rgba(41, 128, 185, 255); }
+                    """)
+                    video_path = task.output_path
+                    preview_btn.clicked.connect(lambda checked, p=video_path: self._preview_video(p))
+                    self.queue_table.setCellWidget(idx, 2, preview_btn)
                 
                 # Add to done table
                 row = self.done_table.rowCount()
@@ -1638,10 +2185,23 @@ class VideoGenTab(QWidget):
                 
                 self._log(f"✅ [{email[:15]}] #{idx+1} {task.post_id}")
             else:
-                item = QTableWidgetItem("❌ Lỗi")
-                item.setBackground(QColor("#e74c3c"))
-                item.setForeground(QColor("white"))
-                self.queue_table.setItem(idx, 3, item)
+                if isinstance(pbar, QProgressBar):
+                    pbar.setValue(100)
+                    pbar.setFormat("❌ Lỗi")
+                    pbar.setStyleSheet("""
+                        QProgressBar {
+                            background: rgba(40, 50, 70, 180);
+                            border: 1px solid rgba(231, 76, 60, 100);
+                            border-radius: 4px;
+                            color: white;
+                            font-size: 10px;
+                            text-align: center;
+                        }
+                        QProgressBar::chunk {
+                            background: #e74c3c;
+                            border-radius: 3px;
+                        }
+                    """)
                 self.failed_prompts.append(task)
                 self._log(f"❌ [{email[:15]}] #{idx+1} {(task.error_message or '')[:30]}")
         
@@ -1742,6 +2302,15 @@ class VideoGenTab(QWidget):
         self.aspect_combo.currentIndexChanged.connect(self._save_settings)
         self.length_combo.currentIndexChanged.connect(self._save_settings)
         self.resolution_combo.currentIndexChanged.connect(self._save_settings)
+    def _update_supergrok_warning(self):
+        """Show warning khi user chọn settings cần SuperGrok"""
+        needs_super = (
+            self.length_combo.currentIndex() == 1  # 10 giây
+            or self.resolution_combo.currentIndex() == 1  # 720p
+        )
+        self.supergrok_warn.setVisible(needs_super)
+
+
     
     def _save_settings(self):
         """Save current settings to file"""
@@ -1756,6 +2325,14 @@ class VideoGenTab(QWidget):
         except Exception as e:
             print(f"Failed to save settings: {e}")
     
+    def _preview_video(self, video_path: str):
+        """Mở dialog xem trước video."""
+        if not os.path.exists(video_path):
+            QMessageBox.warning(self, "Lỗi", f"File không tồn tại:\n{video_path}")
+            return
+        dialog = VideoPreviewDialog(video_path, self)
+        dialog.exec()
+
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log.append(f"[{ts}] {msg}")

@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "blender-mcp": {
+      "command": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+      "args": [
+        "/Users/phamvanhuy/Grok-API/blender_mcp/mcp_server.py"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "blender_execute_code",
+        "blender_get_scene_info",
+        "blender_create_object",
+        "blender_modify_object",
+        "blender_set_material",
+        "blender_delete_objects",
+        "blender_set_keyframe",
+        "blender_set_animation_range",
+        "blender_render_image",
+        "blender_render_animation",
+        "blender_set_world",
+        "blender_smooth_shade",
+        "blender_add_modifier"
+      ]
+    }
+  }
+}

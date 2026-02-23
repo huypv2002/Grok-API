@@ -301,9 +301,33 @@ class BrowserController:
         return False
 
     def get_cookies(self) -> dict:
+        """Lấy cookies từ TẤT CẢ domains qua CDP (không chỉ domain hiện tại).
+        
+        Selenium driver.get_cookies() chỉ trả cookies của domain hiện tại.
+        Khi browser ở grok.com, sẽ KHÔNG thấy cookies sso/sso-rw từ .x.ai.
+        CDP Network.getAllCookies trả về cookies cross-domain.
+        """
         if self.driver:
-            cookies = self.driver.get_cookies()
-            return {c['name']: c['value'] for c in cookies}
+            try:
+                # CDP lấy ALL cookies từ mọi domain (bao gồm .x.ai, .x.com, .grok.com)
+                result = self.driver.execute_cdp_cmd('Network.getAllCookies', {})
+                all_cookies = result.get('cookies', [])
+                
+                # Chỉ lấy cookies từ các domain liên quan
+                relevant_domains = ['.x.ai', 'x.ai', '.grok.com', 'grok.com', '.x.com', 'x.com', 'accounts.x.ai']
+                cookies = {}
+                for c in all_cookies:
+                    domain = c.get('domain', '')
+                    if any(domain.endswith(d) or domain == d for d in relevant_domains):
+                        cookies[c['name']] = c['value']
+                
+                logger.info(f"[COOKIES] CDP getAllCookies: {len(all_cookies)} total, {len(cookies)} relevant. Keys: {list(cookies.keys())}")
+                return cookies
+            except Exception as e:
+                logger.warning(f"[COOKIES] CDP getAllCookies failed, fallback to driver.get_cookies(): {e}")
+                # Fallback về cách cũ nếu CDP fail
+                cookies = self.driver.get_cookies()
+                return {c['name']: c['value'] for c in cookies}
         return {}
 
     def set_cookies(self, cookies: dict, domain: str = ".grok.com") -> None:

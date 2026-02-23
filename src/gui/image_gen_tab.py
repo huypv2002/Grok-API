@@ -465,7 +465,28 @@ class ImageGenTab(QWidget):
 
         self._apply_theme()
 
+        # === Overlay "đang phát triển" ===
+        self._overlay = QWidget(self)
+        self._overlay.setStyleSheet("""
+            background: rgba(0, 0, 0, 160);
+            border-radius: 10px;
+        """)
+        overlay_layout = QVBoxLayout(self._overlay)
+        overlay_layout.setAlignment(Qt.AlignCenter)
+        overlay_label = QLabel("🚧 Chức năng đang tiếp tục phát triển\nVui lòng đợi bạn nhé! 🙏")
+        overlay_label.setAlignment(Qt.AlignCenter)
+        overlay_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        overlay_label.setStyleSheet("color: white; background: transparent;")
+        overlay_label.setWordWrap(True)
+        overlay_layout.addWidget(overlay_label)
+        self._overlay.raise_()
+
     # ==================== Theme ====================
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_overlay'):
+            self._overlay.setGeometry(self.rect())
 
     def set_dark_mode(self, is_dark):
         self.is_dark = is_dark

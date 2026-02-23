@@ -18,15 +18,66 @@ AUTH_API_URL = "https://grok-auth-api.kh431248.workers.dev/login"
 
 
 def get_machine_id() -> str:
-    """Tạo machine ID từ thông tin phần cứng. Cùng máy → cùng ID."""
-    raw = f"{platform.node()}|{platform.machine()}|{platform.processor()}"
-    # Thêm MAC address nếu có
+    """Tạo machine ID ổn định. 1 máy = 1 mã duy nhất."""
+    hw_id = _get_hardware_uuid()
+    if hw_id:
+        return hashlib.sha256(hw_id.encode()).hexdigest()[:32]
+    # Fallback: generate 1 lần, lưu file
+    return _get_or_create_machine_id()
+
+
+def _get_hardware_uuid() -> str:
+    """Lấy hardware UUID từ Windows Registry — ổn định, không đổi."""
     try:
-        mac = uuid.getnode()
-        raw += f"|{mac}"
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Cryptography"
+        )
+        value, _ = winreg.QueryValueEx(key, "MachineGuid")
+        winreg.CloseKey(key)
+        if value:
+            return value
     except Exception:
         pass
-    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+    # Fallback: thử wmic nếu registry fail
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["wmic", "csproduct", "get", "uuid"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=0x08000000
+        )
+        for line in result.stdout.strip().split('\n'):
+            line = line.strip()
+            if line and line.lower() != 'uuid' and len(line) > 10:
+                return line
+    except Exception:
+        pass
+    return ""
+
+
+def _get_or_create_machine_id() -> str:
+    """Fallback cuối: tạo 1 lần và lưu vào file."""
+    import os
+    mid_file = os.path.join("data", ".machine_id")
+    os.makedirs("data", exist_ok=True)
+    try:
+        if os.path.exists(mid_file):
+            with open(mid_file, 'r') as f:
+                mid = f.read().strip()
+                if mid and len(mid) == 32:
+                    return mid
+    except Exception:
+        pass
+    raw = f"{platform.machine()}|{platform.processor()}|{uuid.getnode()}"
+    mid = hashlib.sha256(raw.encode()).hexdigest()[:32]
+    try:
+        with open(mid_file, 'w') as f:
+            f.write(mid)
+    except Exception:
+        pass
+    return mid
 
 
 class AuthWorker(QThread):

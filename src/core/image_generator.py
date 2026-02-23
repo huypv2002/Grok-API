@@ -358,27 +358,91 @@ class MultiTabImageGenerator:
             self._log(f"⚠️ Settings error: {e}", tab_id)
 
     async def _apply_image_settings_in_menu(self, tab, tab_id: int, settings: ImageSettings) -> None:
-        """Apply aspect ratio setting in the open menu"""
+        """Apply aspect ratio using semantic locator + CDP mouse event."""
         try:
-            aspect_label = settings.aspect_ratio  # "2:3", "3:2", "1:1", "9:16", "16:9"
+            aspect_label = settings.aspect_ratio
             
             self._log(f"⚙️ Applying aspect ratio: {aspect_label}", tab_id)
             
-            # Click aspect ratio button
-            aspect_result = await tab.evaluate(f"""
+            for attempt in range(5):
+                # Tìm button bằng aria-label → lấy rect
+                info = await tab.evaluate("""
+                    (function(targetLabel) {
+                        var menu = document.querySelector('[role="menu"][data-state="open"]');
+                        var scope = menu || document;
+                        var buttons = scope.querySelectorAll('button[aria-label]');
+                        for (var btn of buttons) {
+                            if (btn.getAttribute('aria-label') === targetLabel) {
+                                var rect = btn.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    var isActive = btn.classList.contains('font-semibold') ||
+                                                   btn.className.includes('text-primary font-semibold');
+                                    return {
+                                        found: true,
+                                        x: rect.x + rect.width / 2,
+                                        y: rect.y + rect.height / 2,
+                                        active: isActive
+                                    };
+                                }
+                            }
+                        }
+                        return {found: false};
+                    })""" + f"('{aspect_label}')")
+                
+                if not info or not info.get('found'):
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                if info.get('active'):
+                    self._log(f"   Aspect: {aspect_label} (already active)", tab_id)
+                    return
+                
+                # CDP mouse click
+                x, y = info['x'], info['y']
+                await tab.send(cdp.input_.dispatch_mouse_event(type_="mouseMoved", x=x, y=y))
+                await asyncio.sleep(0.05)
+                await tab.send(cdp.input_.dispatch_mouse_event(
+                    type_="mousePressed", x=x, y=y,
+                    button=cdp.input_.MouseButton.LEFT, click_count=1
+                ))
+                await asyncio.sleep(0.05)
+                await tab.send(cdp.input_.dispatch_mouse_event(
+                    type_="mouseReleased", x=x, y=y,
+                    button=cdp.input_.MouseButton.LEFT, click_count=1
+                ))
+                await asyncio.sleep(0.5)
+                
+                # Verify
+                verify = await tab.evaluate("""
+                    (function(targetLabel) {
+                        var menu = document.querySelector('[role="menu"][data-state="open"]');
+                        var scope = menu || document;
+                        var buttons = scope.querySelectorAll('button[aria-label]');
+                        for (var btn of buttons) {
+                            if (btn.getAttribute('aria-label') === targetLabel) {
+                                return {
+                                    active: btn.classList.contains('font-semibold') ||
+                                            btn.className.includes('text-primary font-semibold')
+                                };
+                            }
+                        }
+                        return {active: false};
+                    })""" + f"('{aspect_label}')")
+                
+                if verify and verify.get('active'):
+                    self._log(f"   Aspect: {aspect_label} ✓", tab_id)
+                    return
+                
+                self._log(f"   Aspect: retry {attempt+1}", tab_id)
+                await asyncio.sleep(0.5)
+            
+            self._log(f"   Aspect: fallback JS click", tab_id)
+            await tab.evaluate(f"""
                 (function() {{
-                    var buttons = document.querySelectorAll('button[aria-label]');
-                    for (var btn of buttons) {{
-                        var label = btn.getAttribute('aria-label');
-                        if (label === '{aspect_label}') {{
-                            btn.click();
-                            return 'clicked ' + label;
-                        }}
-                    }}
-                    return 'aspect not found';
+                    var btns = document.querySelectorAll('button[aria-label="{aspect_label}"]');
+                    if (btns.length > 0) btns[0].click();
                 }})()
             """)
-            self._log(f"   Aspect: {aspect_result}", tab_id)
             
         except Exception as e:
             self._log(f"⚠️ Settings error: {e}", tab_id)

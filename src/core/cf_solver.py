@@ -42,11 +42,11 @@ _CURRENT_OS = _platform.system()
 def _build_fixed_user_agent() -> str:
     """Build fixed Chrome UA string matching the current OS."""
     if _CURRENT_OS == "Windows":
-        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
     elif _CURRENT_OS == "Darwin":
-        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
     else:
-        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 
 FIXED_USER_AGENT = _build_fixed_user_agent()
 
@@ -320,26 +320,26 @@ class CloudflareSolver:
             plat = device.os.family
             plat_ver = device.os.version_string
         
-        browser_major = str(device.browser.version[0]) if device.browser.version else "144"
+        browser_major = str(device.browser.version[0]) if device.browser.version else "145"
         
         metadata = UserAgentMetadata(
-            architecture="x86",
+            architecture="arm",
             bitness="64",
             brands=[
-                UserAgentBrandVersion(brand="Not)A;Brand", version="8"),
-                UserAgentBrandVersion(brand="Chromium", version=browser_major),
+                UserAgentBrandVersion(brand="Not:A-Brand", version="99"),
                 UserAgentBrandVersion(brand="Google Chrome", version=browser_major),
+                UserAgentBrandVersion(brand="Chromium", version=browser_major),
             ],
             full_version_list=[
-                UserAgentBrandVersion(brand="Not)A;Brand", version="8.0.0.0"),
-                UserAgentBrandVersion(brand="Chromium", version=device.browser.version_string or "144.0.0.0"),
-                UserAgentBrandVersion(brand="Google Chrome", version=device.browser.version_string or "144.0.0.0"),
+                UserAgentBrandVersion(brand="Not:A-Brand", version="99.0.0.0"),
+                UserAgentBrandVersion(brand="Google Chrome", version=device.browser.version_string or "145.0.7632.110"),
+                UserAgentBrandVersion(brand="Chromium", version=device.browser.version_string or "145.0.7632.110"),
             ],
             mobile=False,
             model="",
             platform=plat,
             platform_version=plat_ver,
-            full_version=device.browser.version_string or "144.0.0.0",
+            full_version=device.browser.version_string or "145.0.7632.110",
             wow64=False,
         )
         self.driver.main_tab.feed_cdp(

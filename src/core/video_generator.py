@@ -2283,20 +2283,20 @@ class MultiTabVideoGenerator:
                 await self._apply_video_settings_in_menu(tab, tab_id, settings)
                 await asyncio.sleep(0.5)
             
-            # Click Video option
+            # Click Video option — semantic: role="menuitem" chứa text "Video"
             await tab.evaluate("""
                 (function() {
-                    var items = document.querySelectorAll('[role="menuitem"]');
+                    var menu = document.querySelector('[role="menu"][data-state="open"]');
+                    var scope = menu || document;
+                    var items = scope.querySelectorAll('[role="menuitem"]');
                     for (var item of items) {
-                        var text = item.textContent || '';
-                        if (text.includes('Video') && text.includes('Tạo một video')) {
-                            item.click();
-                            return 'clicked';
-                        }
-                        var svg = item.querySelector('svg');
-                        if (svg && svg.querySelector('polygon')) {
-                            item.click();
-                            return 'clicked polygon';
+                        var spans = item.querySelectorAll('span');
+                        for (var span of spans) {
+                            var text = span.textContent.trim();
+                            if (text === 'Video') {
+                                item.click();
+                                return 'clicked Video';
+                            }
                         }
                     }
                     return 'not found';
@@ -2308,65 +2308,96 @@ class MultiTabVideoGenerator:
             self._log(f"⚠️ Mode select error: {e}", tab_id)
     
     async def _apply_video_settings_in_menu(self, tab, tab_id: int, settings: VideoSettings) -> None:
-        """Apply video settings (duration, resolution, aspect ratio) in the open menu"""
+        """Apply video settings (duration, resolution, aspect ratio) in the open menu.
+        
+        Grok menu re-render sau mỗi click → cần chờ menu ổn định trước khi click tiếp.
+        Dùng JS click + wait for menu re-open pattern.
+        """
         try:
-            # Map settings to button labels
-            duration_label = f"{settings.video_length}s"  # "6s" or "10s"
-            resolution_label = settings.resolution  # "480p" or "720p"
-            aspect_label = settings.aspect_ratio  # "2:3", "3:2", "1:1", "9:16", "16:9"
+            duration_label = f"{settings.video_length}s"
+            resolution_label = settings.resolution
+            aspect_label = settings.aspect_ratio
             
             self._log(f"⚙️ Applying settings: {duration_label}, {resolution_label}, {aspect_label}", tab_id)
             
-            # Click duration button
-            duration_result = await tab.evaluate(f"""
-                (function() {{
-                    var buttons = document.querySelectorAll('button[aria-label]');
-                    for (var btn of buttons) {{
-                        var label = btn.getAttribute('aria-label');
-                        if (label === '{duration_label}') {{
-                            btn.click();
-                            return 'clicked ' + label;
-                        }}
-                    }}
-                    return 'duration not found';
-                }})()
-            """)
-            self._log(f"   Duration: {duration_result}", tab_id)
-            await asyncio.sleep(0.3)
+            async def wait_for_menu_open(timeout: float = 3.0) -> bool:
+                """Chờ menu [data-state='open'] xuất hiện sau re-render."""
+                for _ in range(int(timeout / 0.3)):
+                    is_open = await tab.evaluate("""
+                        (function() {
+                            var menu = document.querySelector('[role="menu"][data-state="open"]');
+                            return menu ? true : false;
+                        })()
+                    """)
+                    if is_open:
+                        return True
+                    await asyncio.sleep(0.3)
+                return False
             
-            # Click resolution button
-            resolution_result = await tab.evaluate(f"""
-                (function() {{
-                    var buttons = document.querySelectorAll('button[aria-label]');
-                    for (var btn of buttons) {{
-                        var label = btn.getAttribute('aria-label');
-                        if (label === '{resolution_label}') {{
-                            btn.click();
-                            return 'clicked ' + label;
-                        }}
-                    }}
-                    return 'resolution not found';
-                }})()
-            """)
-            self._log(f"   Resolution: {resolution_result}", tab_id)
-            await asyncio.sleep(0.3)
+            async def click_setting_button(aria_label: str, name: str) -> bool:
+                """Click button bằng aria-label trong menu đang mở. Retry nếu menu chưa sẵn sàng."""
+                for attempt in range(8):
+                    result = await tab.evaluate("""
+                        (function(targetLabel) {
+                            var menu = document.querySelector('[role="menu"][data-state="open"]');
+                            if (!menu) return {status: 'no_menu'};
+                            var buttons = menu.querySelectorAll('button[aria-label]');
+                            for (var btn of buttons) {
+                                if (btn.getAttribute('aria-label') === targetLabel) {
+                                    btn.click();
+                                    return {status: 'clicked', label: targetLabel};
+                                }
+                            }
+                            return {status: 'not_found', count: buttons.length};
+                        })""" + f"('{aria_label}')")
+                    
+                    if result and result.get('status') == 'clicked':
+                        self._log(f"   {name}: {aria_label} ✓", tab_id)
+                        return True
+                    
+                    # Menu chưa mở hoặc button chưa render → chờ
+                    await asyncio.sleep(0.5)
+                
+                self._log(f"   {name}: {aria_label} not found", tab_id)
+                return False
             
-            # Click aspect ratio button
-            aspect_result = await tab.evaluate(f"""
-                (function() {{
-                    var buttons = document.querySelectorAll('button[aria-label]');
-                    for (var btn of buttons) {{
-                        var label = btn.getAttribute('aria-label');
-                        if (label === '{aspect_label}') {{
-                            btn.click();
-                            return 'clicked ' + label;
-                        }}
-                    }}
-                    return 'aspect not found';
-                }})()
-            """)
-            self._log(f"   Aspect: {aspect_result}", tab_id)
-            await asyncio.sleep(0.3)
+            # 1. Duration — click xong Grok re-render menu (đóng rồi mở lại)
+            await click_setting_button(duration_label, "Duration")
+            await asyncio.sleep(1.5)  # Chờ menu re-render xong
+            
+            # Menu có thể đã đóng sau click duration → cần mở lại
+            menu_open = await wait_for_menu_open(2.0)
+            if not menu_open:
+                # Re-open menu bằng click trigger
+                self._log(f"   Menu closed after duration click, re-opening...", tab_id)
+                await tab.evaluate("""
+                    (function() {
+                        var trigger = document.querySelector('#model-select-trigger');
+                        if (trigger) trigger.click();
+                    })()
+                """)
+                await asyncio.sleep(1.0)
+                await wait_for_menu_open(2.0)
+            
+            # 2. Resolution
+            await click_setting_button(resolution_label, "Resolution")
+            await asyncio.sleep(1.0)
+            
+            menu_open = await wait_for_menu_open(2.0)
+            if not menu_open:
+                self._log(f"   Menu closed after resolution click, re-opening...", tab_id)
+                await tab.evaluate("""
+                    (function() {
+                        var trigger = document.querySelector('#model-select-trigger');
+                        if (trigger) trigger.click();
+                    })()
+                """)
+                await asyncio.sleep(1.0)
+                await wait_for_menu_open(2.0)
+            
+            # 3. Aspect ratio
+            await click_setting_button(aspect_label, "Aspect")
+            await asyncio.sleep(0.5)
             
         except Exception as e:
             self._log(f"⚠️ Settings error: {e}", tab_id)

@@ -117,7 +117,7 @@ class APIVideoGenerator:
         
         self._log(f"📤 Creating video: {prompt[:40]}...")
         
-        # Use API to create video
+        # Use API to create video (generate_video gồm cả create + conversations + share link)
         post_id = self.api.generate_video(
             cookies=self.cookies,
             prompt=prompt,
@@ -129,19 +129,18 @@ class APIVideoGenerator:
         
         if not post_id:
             # cf_clearance might be expired, try refresh
-            if not self._cf_valid or 'cf_clearance' not in self.cookies:
-                self._log("⚠️ cf_clearance expired, refreshing...")
-                self._cf_valid = False
-                if await self.init_cookies():
-                    # Retry
-                    post_id = self.api.generate_video(
-                        cookies=self.cookies,
-                        prompt=prompt,
-                        aspect_ratio=settings.aspect_ratio if settings else "16:9",
-                        video_length=settings.video_length if settings else 6,
-                        resolution=settings.resolution if settings else "480p",
-                        on_status=lambda msg: self._log(msg)
-                    )
+            self._log("⚠️ Có thể cf_clearance expired, refreshing...")
+            self._cf_valid = False
+            if await self.init_cookies():
+                # Retry
+                post_id = self.api.generate_video(
+                    cookies=self.cookies,
+                    prompt=prompt,
+                    aspect_ratio=settings.aspect_ratio if settings else "16:9",
+                    video_length=settings.video_length if settings else 6,
+                    resolution=settings.resolution if settings else "480p",
+                    on_status=lambda msg: self._log(msg)
+                )
         
         if not post_id:
             task.status = "failed"
@@ -150,10 +149,6 @@ class APIVideoGenerator:
         
         task.post_id = post_id
         task.media_url = VIDEO_DOWNLOAD_URL.format(post_id=post_id)
-        
-        # Create share link
-        self._log("🔗 Creating share link...")
-        self.api.create_share_link(self.cookies, post_id, on_status=lambda msg: self._log(msg))
         
         task.status = "completed"
         task.completed_at = datetime.now()

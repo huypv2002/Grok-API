@@ -89,6 +89,28 @@ export default {
       }
     }
 
+    // Bulk operations
+    if (path === "/admin/bulk" && request.method === "POST") {
+      if (request.headers.get("X-Admin-Key") !== ADMIN_KEY) return json({ error: "Unauthorized" }, 401);
+      const { action, usernames } = await request.json();
+      if (!usernames || !usernames.length) return json({ error: "No users selected" }, 400);
+      
+      let count = 0;
+      for (const u of usernames) {
+        if (action === "delete") {
+          await env.DB.prepare("DELETE FROM app_users WHERE username=?").bind(u).run();
+        } else if (action === "lock") {
+          await env.DB.prepare("UPDATE app_users SET is_active=0 WHERE username=?").bind(u).run();
+        } else if (action === "unlock") {
+          await env.DB.prepare("UPDATE app_users SET is_active=1 WHERE username=?").bind(u).run();
+        } else if (action === "reset_machine") {
+          await env.DB.prepare("UPDATE app_users SET machine_id=NULL WHERE username=?").bind(u).run();
+        }
+        count++;
+      }
+      return json({ ok: true, count });
+    }
+
     return json({ error: "Not found" }, 404);
   },
 };
@@ -121,13 +143,14 @@ button:hover{opacity:.85}
 .ed{background:linear-gradient(90deg,#f39c12,#e67e22)}
 .tg{background:linear-gradient(90deg,#8e44ad,#9b59b6)}
 .rs{background:linear-gradient(90deg,#16a085,#1abc9c)}
-.ki{max-width:1100px;margin:8px auto;display:flex;gap:8px;align-items:center}
-.ki input{max-width:250px}
-.ki label{font-size:11px;color:rgba(255,255,255,.4)}
 #m{text-align:center;padding:8px;font-size:12px;color:#2ecc71;min-height:20px}
+.bulk{display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap}
+.bulk button{padding:6px 12px;font-size:11px}
+.bulk span{font-size:11px;color:rgba(255,255,255,.5)}
+input[type="checkbox"]{width:16px;height:16px;cursor:pointer}
+.cnt{font-size:11px;color:rgba(255,255,255,.5);margin-left:8px}
 </style></head><body>
 <h1>🎬 Grok Admin Panel</h1>
-<div class="ki"><label>Admin Key:</label><input type="password" id="ak" placeholder="Nhập admin key..."><button onclick="L()">🔄 Load</button></div>
 <div id="m"></div>
 <div class="c"><h2>➕ Thêm / Sửa tài khoản</h2>
 <div class="fr">
@@ -138,16 +161,37 @@ button:hover{opacity:.85}
 <div><label>Machine ID</label><input id="fm" placeholder="Mã máy (user cung cấp)"></div>
 <div><label>&nbsp;</label><button onclick="S()">💾 Lưu</button></div>
 </div></div>
-<div class="c"><h2>👤 Danh sách tài khoản</h2>
-<table><thead><tr><th>Username</th><th>Gói</th><th>Hết hạn</th><th>Trạng thái</th><th>Machine ID</th><th>Ngày tạo</th><th>Thao tác</th></tr></thead>
+<div class="c"><h2>👤 Danh sách tài khoản <span class="cnt" id="cnt"></span></h2>
+<div class="bulk">
+<input type="checkbox" id="sa" onchange="SA(this.checked)" title="Chọn tất cả">
+<span>Chọn:</span>
+<button onclick="BA('lock')">🔒 Khóa</button>
+<button onclick="BA('unlock')">🔓 Mở khóa</button>
+<button class="rs" onclick="BA('reset_machine')">🔄 Reset máy</button>
+<button class="dl" onclick="BA('delete')">🗑️ Xóa</button>
+<span id="sc" style="margin-left:auto"></span>
+</div>
+<table><thead><tr><th style="width:30px"></th><th>Username</th><th>Gói</th><th>Hết hạn</th><th>Trạng thái</th><th>Machine ID</th><th>Ngày tạo</th><th>Thao tác</th></tr></thead>
 <tbody id="ul"></tbody></table></div>
 <script>
-const A=location.origin,K=()=>document.getElementById('ak').value;
+const A=location.origin,K=()=>'huyem';
+let sel=new Set();
 function M(t,c){const m=document.getElementById('m');m.textContent=t;m.style.color=c||'#2ecc71';setTimeout(()=>m.textContent='',3000)}
+function UC(){document.getElementById('sc').textContent=sel.size?'Đã chọn: '+sel.size:'';}
+function SA(c){document.querySelectorAll('.uc').forEach(cb=>{cb.checked=c;c?sel.add(cb.dataset.u):sel.delete(cb.dataset.u)});UC()}
+function TC(u,c){c?sel.add(u):sel.delete(u);UC();document.getElementById('sa').checked=sel.size===document.querySelectorAll('.uc').length}
+async function BA(act){
+  if(!sel.size){M('Chưa chọn user nào','#e74c3c');return}
+  const names={delete:'xóa',lock:'khóa',unlock:'mở khóa',reset_machine:'reset máy'};
+  if(!confirm(names[act]+' '+sel.size+' tài khoản?'))return;
+  const r=await fetch(A+'/admin/bulk',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Key':K()},body:JSON.stringify({action:act,usernames:[...sel]})});
+  if(r.ok){const d=await r.json();M('Đã '+names[act]+' '+d.count+' tài khoản');sel.clear();UC();L()}else M('Lỗi','#e74c3c');
+}
 async function L(){
   const r=await fetch(A+'/admin/users',{headers:{'X-Admin-Key':K()}});
-  if(!r.ok){M('Sai admin key','#e74c3c');return}
+  if(!r.ok){M('Lỗi tải dữ liệu','#e74c3c');return}
   const d=await r.json(),now=new Date().toISOString().split('T')[0];
+  document.getElementById('cnt').textContent='('+d.users.length+' tài khoản)';
   let h='';
   d.users.forEach(u=>{
     const exp=u.expires_at&&u.expires_at<now;
@@ -155,16 +199,19 @@ async function L(){
     const sl=st==='ok'?'Hoạt động':st==='ex'?'Hết hạn':'Khóa';
     const mid=u.machine_id||'';
     const midShort=mid?mid.slice(0,16)+'…':'chưa gán';
-    h+=\`<tr><td>\${u.username}</td><td>\${u.plan||'trial'}</td><td>\${u.expires_at||'∞'}</td>
+    const ck=sel.has(u.username)?'checked':'';
+    h+=\`<tr><td><input type="checkbox" class="uc" data-u="\${u.username}" \${ck} onchange="TC('\${u.username}',this.checked)"></td>
+    <td>\${u.username}</td><td>\${u.plan||'trial'}</td><td>\${u.expires_at||'∞'}</td>
     <td><span class="b \${st}">\${sl}</span></td>
     <td class="mid" title="\${mid}" onclick="navigator.clipboard.writeText('\${mid}');M('Đã copy machine ID')">\${midShort}</td>
     <td>\${(u.created_at||'').slice(0,10)}</td>
     <td style="white-space:nowrap"><button class="ed" onclick="E('\${u.username}','\${mid}')">✏️</button>
     <button class="dl" onclick="D('\${u.username}')">🗑️</button>
     <button class="tg" onclick="T('\${u.username}',\${u.is_active?0:1})">\${u.is_active?'🔒':'🔓'}</button>
-    \${mid?\`<button class="rs" onclick="R('\${u.username}')">🔄 Reset</button>\`:''}</td></tr>\`;
+    \${mid?\`<button class="rs" onclick="R('\${u.username}')">🔄</button>\`:''}</td></tr>\`;
   });
-  document.getElementById('ul').innerHTML=h||'<tr><td colspan="7">Trống</td></tr>';
+  document.getElementById('ul').innerHTML=h||'<tr><td colspan="8">Trống</td></tr>';
+  document.getElementById('sa').checked=false;
 }
 async function S(){
   const u=document.getElementById('fu').value.trim(),p=document.getElementById('fp').value.trim(),m=document.getElementById('fm').value.trim();
@@ -172,7 +219,6 @@ async function S(){
   const b={username:u,plan:document.getElementById('fg').value,expires_at:document.getElementById('fe').value};
   if(p)b.password=p;
   if(m)b.machine_id=m;
-  // Nếu có password → POST (tạo mới), không → PUT (sửa)
   if(p){
     const r=await fetch(A+'/admin/users',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Key':K()},body:JSON.stringify(b)});
     r.ok?M('Đã tạo!'):M('Lỗi','#e74c3c');
@@ -185,5 +231,6 @@ async function S(){
 function E(u,mid){document.getElementById('fu').value=u;document.getElementById('fm').value=mid||'';document.getElementById('fp').focus()}
 async function D(u){if(!confirm('Xóa '+u+'?'))return;await fetch(A+'/admin/users?username='+u,{method:'DELETE',headers:{'X-Admin-Key':K()}});M('Đã xóa');L()}
 async function T(u,a){await fetch(A+'/admin/users',{method:'PUT',headers:{'Content-Type':'application/json','X-Admin-Key':K()},body:JSON.stringify({username:u,is_active:!!a})});M(a?'Đã mở':'Đã khóa');L()}
-async function R(u){if(!confirm('Reset máy cho '+u+'? User sẽ cần gửi lại mã máy mới.'))return;await fetch(A+'/admin/users',{method:'PUT',headers:{'Content-Type':'application/json','X-Admin-Key':K()},body:JSON.stringify({username:u,reset_machine:true})});M('Đã reset máy');L()}
+async function R(u){if(!confirm('Reset máy cho '+u+'?'))return;await fetch(A+'/admin/users',{method:'PUT',headers:{'Content-Type':'application/json','X-Admin-Key':K()},body:JSON.stringify({username:u,reset_machine:true})});M('Đã reset máy');L()}
+L();
 </script></body></html>`;

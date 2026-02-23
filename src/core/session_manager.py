@@ -240,8 +240,17 @@ class SessionManager:
                 account.cookies = cookies
                 account.status = "logged_in"
                 account.last_login = datetime.now()
+                
+                # Log chi tiết cookies đã lấy được
+                required_found = [k for k in REQUIRED_COOKIES if k in cookies]
+                required_missing = [k for k in REQUIRED_COOKIES if k not in cookies]
+                logger.info(f"[LOGIN] Cookies captured: {len(cookies)} total. Keys: {list(cookies.keys())}")
+                logger.info(f"[LOGIN] Required found: {required_found}, missing: {required_missing}")
+                
                 if on_status:
-                    on_status(f"✅ Login thành công! Cookies: {len(cookies)}")
+                    on_status(f"✅ Login thành công! Cookies: {len(cookies)} (có: {required_found})")
+                    if required_missing:
+                        on_status(f"⚠️ Thiếu cookies: {required_missing}")
                 return True
             else:
                 account.status = "error"
@@ -315,8 +324,16 @@ class SessionManager:
                 account.cookies = cookies
                 account.status = "logged_in"
                 account.last_login = datetime.now()
+                
+                required_found = [k for k in REQUIRED_COOKIES if k in cookies]
+                required_missing = [k for k in REQUIRED_COOKIES if k not in cookies]
+                logger.info(f"[LOGIN] Cookies captured: {len(cookies)} total. Keys: {list(cookies.keys())}")
+                logger.info(f"[LOGIN] Required found: {required_found}, missing: {required_missing}")
+                
                 if on_status:
-                    on_status("✅ Login thành công! Browser giữ mở.")
+                    on_status(f"✅ Login thành công! Cookies: {len(cookies)} (có: {required_found})")
+                    if required_missing:
+                        on_status(f"⚠️ Thiếu cookies: {required_missing}")
                 return controller
 
             account.status = "error"
