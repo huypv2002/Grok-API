@@ -9,7 +9,8 @@ from .models import Account, VideoSettings
 from .cf_solver import solve_cloudflare, CF_SOLVER_AVAILABLE
 
 VIDEO_DOWNLOAD_URL = "https://imagine-public.x.ai/imagine-public/share-videos/{post_id}.mp4?cache=1&dl=1"
-OUTPUT_DIR = Path("output")
+from .paths import output_path as _output_path
+OUTPUT_DIR = _output_path()
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
 
 

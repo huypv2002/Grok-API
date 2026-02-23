@@ -559,7 +559,8 @@ class HistoryTab(QWidget):
         self._update_table(filtered)
     
     def _open_folder(self):
-        output_dir = os.path.abspath("output")
+        from ..core.paths import output_path
+        output_dir = str(output_path())
         os.makedirs(output_dir, exist_ok=True)
         if sys.platform == "darwin":
             subprocess.run(["open", output_dir])

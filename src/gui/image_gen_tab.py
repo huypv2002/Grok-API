@@ -19,8 +19,18 @@ from ..core.history_manager import HistoryManager
 from ..core.models import ImageSettings, ImageTask
 
 
-SETTINGS_FILE = Path("data/settings.json")
-DEFAULT_OUTPUT_DIR = Path("output/images")
+SETTINGS_FILE = None  # Resolved lazily via paths module
+DEFAULT_OUTPUT_DIR = None  # Resolved lazily via paths module
+
+
+def _img_settings_file():
+    from ..core.paths import data_path
+    return data_path("settings.json")
+
+
+def _img_output_dir():
+    from ..core.paths import output_path
+    return output_path("images")
 
 
 # Shared prompt queue for all workers — ensures natural order
@@ -215,7 +225,7 @@ class ImageGenTab(QWidget):
         self.failed_tasks = []
         self.is_dark = True
 
-        self._output_dir = str(DEFAULT_OUTPUT_DIR)
+        self._output_dir = str(_img_output_dir())
         self._start_time = None
 
         self._setup_ui()
@@ -334,7 +344,7 @@ class ImageGenTab(QWidget):
 
         output_row = QHBoxLayout()
         self.output_input = QLineEdit()
-        self.output_input.setText(str(DEFAULT_OUTPUT_DIR))
+        self.output_input.setText(str(_img_output_dir()))
         self.output_input.setReadOnly(True)
         self.output_input.setFont(QFont("Consolas", 9))
         self.output_input.setMaximumHeight(28)

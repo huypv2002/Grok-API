@@ -48,7 +48,8 @@ ASSETS_BASE = "https://assets.grok.com"
 # Video download URL template
 VIDEO_DOWNLOAD_URL = "https://imagine-public.x.ai/imagine-public/share-videos/{post_id}.mp4?cache=1&dl=1"
 
-OUTPUT_DIR = Path("output")
+from .paths import output_path as _output_path
+OUTPUT_DIR = _output_path()
 
 # Detect OS cho dynamic headers (UA, Sec-Ch-Ua-Platform, fingerprint)
 import platform as _platform

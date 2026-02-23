@@ -30,8 +30,9 @@ _chromedriver_installed = False
 
 
 def _get_profiles_dir() -> Path:
-    """Get profiles directory — always relative to CWD (which is app_dir)."""
-    return Path("data/profiles").absolute()
+    """Get profiles directory — absolute path cạnh exe."""
+    from .paths import data_path
+    return data_path("profiles")
 
 
 def _detect_chrome_version_windows() -> Optional[int]:
@@ -400,7 +401,8 @@ class BrowserController:
 
     def screenshot(self, filename: str = "screenshot.png") -> str:
         if self.driver:
-            path = Path("data") / filename
+            from .paths import data_path
+            path = data_path(filename)
             path.parent.mkdir(parents=True, exist_ok=True)
             self.driver.save_screenshot(str(path))
             logger.info(f"[SCREENSHOT] Saved: {path}")

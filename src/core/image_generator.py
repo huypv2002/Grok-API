@@ -31,8 +31,8 @@ except ImportError:
     ZENDRIVER_AVAILABLE = False
 
 IMAGINE_URL = "https://grok.com/imagine"
-OUTPUT_DIR = Path("output")
-# 1 prompt = 1 ảnh (lấy ảnh đầu tiên ready)
+from .paths import output_path as _output_path
+OUTPUT_DIR = _output_path()
 
 
 class MultiTabImageGenerator:

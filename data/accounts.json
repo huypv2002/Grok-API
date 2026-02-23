@@ -6,19 +6,19 @@
       "fingerprint_id": "bf0b5bfd-a84e-451e-997f-ad696588e84c",
       "status": "logged_in",
       "cookies": {
-        "referrer": "grok-com",
-        "__cf_bm": "aBc1GUXfvGoHopDpq4EIBL5d_TtxsYBz.mRiN5TiANo-1771834495-1.0.1.1-OkEDh2eH90Pjv6XD2XAAT.5.bmfs5f8T_r7AMLUKJQJTkhpOhaY2oXeJEwo53t3jj8cZqkdB6xgg.TH0hjSVV3Hg7tglWvRJspAjuCrkZMQ",
-        "cf_clearance": "u4yxNxaF1AhIhGD7sxryOqoz6wf0ZFQTfWj0iTXT..0-1771834509-1.2.1.1-YgT5iz8cFPUQvSppOBk_2X_l0ewKa12VZOeBxh7Q2xoSE1_Tux0uuNUAW9FPHGHVJfrizvm1VLWRLVpBiJ6SU83QopoHwJToFBQSQSrbjdkJ7gP4wcHMo2dhtFAkyF0wOmSD7K8jkyBKJkrdFvwA5Slg.Kh1tWuQsBEBXC4_af_EXIcA6.DLuTVLOA43TWZMegX5ZCHAD8vHhRbuR_29ipi7v7JKXIjFRZUZnx.rtz0rRYqnPScVdaBy6Kxp3Xcz",
         "last-logged-in-with": "EMAIL",
-        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMzA4MGM5YjMtNTAyOC00ZjAyLTk5OTQtOTUyOTQxOTMyYzE2In0.F9TipYgZ51kX4NqwEgp1rEF873MCwJ4JCyt3Rnm1PxE",
-        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiMzA4MGM5YjMtNTAyOC00ZjAyLTk5OTQtOTUyOTQxOTMyYzE2In0.F9TipYgZ51kX4NqwEgp1rEF873MCwJ4JCyt3Rnm1PxE",
-        "x-userid": "040b24bf-a399-463e-a35f-43da90376ba9",
-        "mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel": "%7B%22distinct_id%22%3A%22040b24bf-a399-463e-a35f-43da90376ba9%22%2C%22%24device_id%22%3A%2201e0ea8b-1d76-47da-9624-4f4a60370d13%22%2C%22%24initial_referrer%22%3A%22https%3A%2F%2Fgrok.com%2F%3F__cf_chl_tk%3D8_pL35Euz7D6Kkk7biRl2pUWgWBiuXRJN6131L2S2dk-1771834505-1.0.1.1-zSbtWPXpIOyXLcUVuHjXGGlrcMsWb.8EVEkylfeu8no%22%2C%22%24initial_referring_domain%22%3A%22grok.com%22%2C%22%24user_id%22%3A%22040b24bf-a399-463e-a35f-43da90376ba9%22%7D",
         "_ga": "GA1.1.53614790.1771834510",
         "i18nextLng": "vi",
-        "_ga_8FEWB057YH": "GS2.1.s1771834509$o1$g0$t1771834509$j60$l0$h0"
+        "__cf_bm": "WS59Olm8bfuUVmnFJTr3KWAM3W4a.U.emF5..5_pEo8-1771861250-1.0.1.1-fk3nB1ZAm0cS.Mywy3Gm0OkhSZq9NCKYmMDkjIZB9zMekx11jGjbSr7q1nFEevySltVm9pTM32yQlTTERmnxz8KSP10VRHGxHm9u5U2ggos",
+        "cf_clearance": "Li9gzQUkkuKJE8F0i9HiUroajsHr59MKced_esg9HgM-1771861280-1.2.1.1-5i3N0B8wX960ndEMqTggRSBXv.QxVRZ8EP_Naf321npz3To2CD9s0wlrIw_NvOKqvjjRcKuQKgKPbNdOF22KNMtYxuJwvavT7AxO2tvat5Pt_gt2_Oa4jEQzgHVC1tTRQNZ8Lk4v5IP6CePSttkW.UDhZeRUrpUUUgGnFsCnrNBXUR04FcdPiNoR.3eIdPW8m4sqmKCN_7myZuRbboo6Iz2Rm1osvy3i7poZxXgiWQw.UnlczCoOjapLW2_7Yxpt",
+        "x-userid": "040b24bf-a399-463e-a35f-43da90376ba9",
+        "referrer": "grok-com",
+        "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNmEwZGJjYzctYjZhNS00MzhlLTk3ZWUtZWEyMzYxYjFiMmRjIn0.qsoYk6MtoQaVPvr0Vn1NBRoxRDA4sW9txe4h2PC-wjY",
+        "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiNmEwZGJjYzctYjZhNS00MzhlLTk3ZWUtZWEyMzYxYjFiMmRjIn0.qsoYk6MtoQaVPvr0Vn1NBRoxRDA4sW9txe4h2PC-wjY",
+        "mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel": "%7B%22distinct_id%22%3A%22040b24bf-a399-463e-a35f-43da90376ba9%22%2C%22%24device_id%22%3A%2201e0ea8b-1d76-47da-9624-4f4a60370d13%22%2C%22%24initial_referrer%22%3A%22https%3A%2F%2Fgrok.com%2F%3F__cf_chl_tk%3D8_pL35Euz7D6Kkk7biRl2pUWgWBiuXRJN6131L2S2dk-1771834505-1.0.1.1-zSbtWPXpIOyXLcUVuHjXGGlrcMsWb.8EVEkylfeu8no%22%2C%22%24initial_referring_domain%22%3A%22grok.com%22%2C%22%24user_id%22%3A%22040b24bf-a399-463e-a35f-43da90376ba9%22%2C%22__mps%22%3A%7B%7D%2C%22__mpso%22%3A%7B%7D%2C%22__mpus%22%3A%7B%7D%2C%22__mpa%22%3A%7B%7D%2C%22__mpu%22%3A%7B%7D%2C%22__mpr%22%3A%5B%5D%2C%22__mpap%22%3A%5B%5D%7D",
+        "_ga_8FEWB057YH": "GS2.1.s1771861279$o2$g1$t1771861304$j35$l0$h0"
       },
-      "last_login": "2026-02-23T15:15:13.074978",
+      "last_login": "2026-02-23T22:41:44.641582",
       "error_message": "Message: no such window: target window already closed\nfrom unknown error: web view not found\n  (Session info: chrome=145.0.7632.110)\nStacktrace:\n0   undetected_chromedriver             0x00000001011253d8 undetected_chromedriver + 6730712\n1   undetected_chromedriver             0x000000010111cc0a undetected_chromedriver + 6695946\n2   undetected_chromedriver             0x0000000100b28cf5 undetected_chromedriver + 453877\n3   undetected_chromedriver             0x0000000100afbf58 undetected_chromedriver + 270168\n4   undetected_chromedriver             0x0000000100bac538 undetected_chromedriver + 992568\n5   undetected_chromedriver             0x0000000100bc6388 undetected_chromedriver + 1098632\n6   undetected_chromedriver             0x0000000100b6f774 undetected_chromedriver + 743284\n7   undetected_chromedriver             0x0000000100b70521 undetected_chromedriver + 746785\n8   undetected_chromedriver             0x00000001010de4a1 undetected_chromedriver + 6440097\n9   undetected_chromedriver             0x00000001010e287a undetected_chromedriver + 6457466\n10  undetected_chromedriver             0x00000001010be159 undetected_chromedriver + 6308185\n11  undetected_chromedriver             0x00000001010e32d8 undetected_chromedriver + 6460120\n12  undetected_chromedriver             0x00000001010acac0 undetected_chromedriver + 6236864\n13  undetected_chromedriver             0x00000001011094b8 undetected_chromedriver + 6616248\n14  undetected_chromedriver             0x0000000101109672 undetected_chromedriver + 6616690\n15  undetected_chromedriver             0x000000010111c816 undetected_chromedriver + 6694934\n16  libsystem_pthread.dylib             0x00007ff804510e4d _pthread_start + 115\n17  libsystem_pthread.dylib             0x00007ff80450c857 thread_start + 15\n"
     }
   ]

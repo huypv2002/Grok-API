@@ -2,15 +2,15 @@
 import os
 from pathlib import Path
 from cryptography.fernet import Fernet
-
-KEY_FILE = Path("data/.key")
+from .paths import data_path
 
 def _get_or_create_key() -> bytes:
-    KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if KEY_FILE.exists():
-        return KEY_FILE.read_bytes()
+    key_file = data_path(".key")
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    if key_file.exists():
+        return key_file.read_bytes()
     key = Fernet.generate_key()
-    KEY_FILE.write_bytes(key)
+    key_file.write_bytes(key)
     return key
 
 def _get_fernet() -> Fernet:

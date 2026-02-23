@@ -73,8 +73,8 @@ def main():
     os.chdir(app_dir)
 
     # 2. Tạo thư mục cần thiết
-    for d in ["data", "data/profiles", "output"]:
-        os.makedirs(d, exist_ok=True)
+    from src.core.paths import ensure_dirs
+    ensure_dirs()
 
     # 3. Log startup info (debug cho EXE)
     try:

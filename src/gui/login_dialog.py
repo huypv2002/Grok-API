@@ -13,8 +13,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, QPointF, QThread, Signal
 from PySide6.QtGui import QFont, QPainter, QLinearGradient, QRadialGradient, QColor, QPen
 
-LOGIN_TEMP_FILE = Path("data/login_temp.json")
 AUTH_API_URL = "https://grok-auth-api.kh431248.workers.dev/login"
+
+# LOGIN_TEMP_FILE removed — dùng data_path("login_temp.json") từ paths module
 
 
 def get_machine_id() -> str:
@@ -60,8 +61,9 @@ def _get_hardware_uuid() -> str:
 def _get_or_create_machine_id() -> str:
     """Fallback cuối: tạo 1 lần và lưu vào file."""
     import os
-    mid_file = os.path.join("data", ".machine_id")
-    os.makedirs("data", exist_ok=True)
+    from ..core.paths import data_path
+    mid_file = str(data_path(".machine_id"))
+    data_path().mkdir(parents=True, exist_ok=True)
     try:
         if os.path.exists(mid_file):
             with open(mid_file, 'r') as f:
@@ -156,7 +158,7 @@ class AppLoginDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("🔐 Đăng nhập")
-        self.setFixedSize(460, 400)
+        self.setFixedSize(460, 480)
         self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint)
         self._worker = None
 
@@ -171,7 +173,7 @@ class AppLoginDialog(QDialog):
         self._load_temp()
 
     def _init_stars(self):
-        w, h = 460, 400
+        w, h = 460, 480
         for _ in range(25):
             s = _Star(
                 random.randint(0, w), random.randint(0, h),
@@ -296,12 +298,14 @@ class AppLoginDialog(QDialog):
 
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText("👤 Tên đăng nhập")
+        self.username_input.setMinimumHeight(44)
         self.username_input.setStyleSheet(inp)
         layout.addWidget(self.username_input)
 
         self.password_input = QLineEdit()
         self.password_input.setPlaceholderText("🔒 Mật khẩu")
         self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setMinimumHeight(44)
         self.password_input.setStyleSheet(inp)
         self.password_input.returnPressed.connect(self._on_login)
         layout.addWidget(self.password_input)
@@ -361,9 +365,11 @@ class AppLoginDialog(QDialog):
 
     def _load_temp(self):
         """Load tk/mk từ login_temp.json nếu có → tự fill."""
-        if LOGIN_TEMP_FILE.exists():
+        from ..core.paths import data_path
+        temp_file = data_path("login_temp.json")
+        if temp_file.exists():
             try:
-                data = json.loads(LOGIN_TEMP_FILE.read_text())
+                data = json.loads(temp_file.read_text(encoding="utf-8"))
                 self.username_input.setText(data.get("username", ""))
                 self.password_input.setText(data.get("password", ""))
             except Exception:
@@ -371,13 +377,15 @@ class AppLoginDialog(QDialog):
 
     def _save_temp(self, username, password, plan="", expires_at=""):
         """Lưu tk/mk + plan/expires_at vào login_temp.json."""
-        LOGIN_TEMP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        LOGIN_TEMP_FILE.write_text(json.dumps({
+        from ..core.paths import data_path
+        temp_file = data_path("login_temp.json")
+        temp_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_file.write_text(json.dumps({
             "username": username,
             "password": password,
             "plan": plan,
             "expires_at": expires_at
-        }, indent=2))
+        }, indent=2), encoding="utf-8")
 
     def _on_login(self):
         username = self.username_input.text().strip()

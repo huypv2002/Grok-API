@@ -129,8 +129,18 @@ def natural_sort_key(s):
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'}
 
-SETTINGS_FILE = Path("data/settings.json")
-DEFAULT_OUTPUT_DIR = Path("output")
+SETTINGS_FILE = None  # Resolved lazily via paths module
+DEFAULT_OUTPUT_DIR = None  # Resolved lazily via paths module
+
+
+def _settings_file():
+    from ..core.paths import data_path
+    return data_path("settings.json")
+
+
+def _output_dir():
+    from ..core.paths import output_path
+    return output_path()
 
 
 class AccountWorker(QThread):
@@ -672,7 +682,7 @@ class VideoGenTab(QWidget):
         self.tab_current_idx: dict = {}
         
         # Output folder & batch tracking
-        self._output_dir = str(DEFAULT_OUTPUT_DIR)
+        self._output_dir = str(_output_dir())
         self._current_batch_name = ""  # subfolder name (from TXT filename)
         self._batch_queue: list = []  # list of (batch_name, [prompts]) for folder import
         
@@ -891,7 +901,7 @@ class VideoGenTab(QWidget):
         
         output_row = QHBoxLayout()
         self.output_input = QLineEdit()
-        self.output_input.setText(str(DEFAULT_OUTPUT_DIR))
+        self.output_input.setText(str(_output_dir()))
         self.output_input.setReadOnly(True)
         self.output_input.setFont(QFont("Consolas", 9))
         self.output_input.setMaximumHeight(28)
@@ -2289,9 +2299,10 @@ class VideoGenTab(QWidget):
             self.elapsed_label.setText(f"⏱ {mins:02d}:{secs:02d}")
     
     def _load_settings(self):
-        if SETTINGS_FILE.exists():
+        sf = _settings_file()
+        if sf.exists():
             try:
-                s = json.loads(SETTINGS_FILE.read_text())
+                s = json.loads(sf.read_text())
                 self.aspect_combo.setCurrentIndex(s.get("aspect", 4))
                 self.length_combo.setCurrentIndex(s.get("length", 0))
                 self.resolution_combo.setCurrentIndex(s.get("resolution", 0))
@@ -2315,13 +2326,14 @@ class VideoGenTab(QWidget):
     def _save_settings(self):
         """Save current settings to file"""
         try:
-            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            sf = _settings_file()
+            sf.parent.mkdir(parents=True, exist_ok=True)
             settings = {
                 "aspect": self.aspect_combo.currentIndex(),
                 "length": self.length_combo.currentIndex(),
                 "resolution": self.resolution_combo.currentIndex(),
             }
-            SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+            sf.write_text(json.dumps(settings, indent=2))
         except Exception as e:
             print(f"Failed to save settings: {e}")
     

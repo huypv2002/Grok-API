@@ -19,7 +19,8 @@ try:
 except ImportError:
     ZENDRIVER_AVAILABLE = False
 
-OUTPUT_DIR = Path("output")
+from .paths import output_path as _output_path
+OUTPUT_DIR = _output_path()
 
 
 class APIVideoGenerator:

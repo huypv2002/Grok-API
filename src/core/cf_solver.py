@@ -32,7 +32,7 @@ except ImportError:
     CF_SOLVER_AVAILABLE = False
 
 # Cache file for cf_clearance
-CF_CACHE_FILE = Path("data/cf_clearance_cache.json")
+from .paths import data_path
 
 # Fixed user agent — platform-aware for Windows/macOS
 import platform as _platform
@@ -611,11 +611,12 @@ def solve_cloudflare(
 
 def save_cf_clearance(data: Dict[str, Any], domain: str = "grok.com") -> None:
     """Save cf_clearance to cache file."""
-    CF_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cache_file = data_path("cf_clearance_cache.json")
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
     
     try:
-        if CF_CACHE_FILE.exists():
-            with open(CF_CACHE_FILE, "r") as f:
+        if cache_file.exists():
+            with open(cache_file, "r") as f:
                 cache = json.load(f)
         else:
             cache = {}
@@ -629,17 +630,18 @@ def save_cf_clearance(data: Dict[str, Any], domain: str = "grok.com") -> None:
         "timestamp": datetime.now().isoformat(),
     }
     
-    with open(CF_CACHE_FILE, "w") as f:
+    with open(cache_file, "w") as f:
         json.dump(cache, f, indent=2)
 
 
 def load_cf_clearance(domain: str = "grok.com") -> Optional[Dict[str, Any]]:
     """Load cf_clearance from cache file."""
-    if not CF_CACHE_FILE.exists():
+    cache_file = data_path("cf_clearance_cache.json")
+    if not cache_file.exists():
         return None
     
     try:
-        with open(CF_CACHE_FILE, "r") as f:
+        with open(cache_file, "r") as f:
             cache = json.load(f)
         return cache.get(domain)
     except:

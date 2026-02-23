@@ -22,7 +22,8 @@ except ImportError:
     ZENDRIVER_AVAILABLE = False
 
 IMAGINE_URL = "https://grok.com/imagine"
-OUTPUT_DIR = Path("output")
+from .paths import output_path as _output_path
+OUTPUT_DIR = _output_path()
 VIDEO_DOWNLOAD_URL = "https://imagine-public.x.ai/imagine-public/share-videos/{post_id}.mp4?cache=1"
 
 
@@ -158,7 +159,8 @@ class VideoGenerator:
                 try:
                     screenshot_data = await solver.driver.main_tab.send(cdp.page.capture_screenshot())
                     if screenshot_data:
-                        debug_path = Path("data") / f"debug_zendriver_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                        from .paths import data_path
+                        debug_path = data_path(f"debug_zendriver_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                         debug_path.parent.mkdir(exist_ok=True)
                         with open(debug_path, 'wb') as f:
                             f.write(base64.b64decode(screenshot_data))

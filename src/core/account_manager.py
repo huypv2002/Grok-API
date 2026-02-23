@@ -5,8 +5,7 @@ from datetime import datetime
 from typing import Optional
 from .models import Account
 from .encryption import encrypt_password, decrypt_password
-
-ACCOUNTS_FILE = Path("data/accounts.json")
+from .paths import data_path
 
 class AccountManager:
     def __init__(self):
@@ -55,7 +54,8 @@ class AccountManager:
         return None
     
     def save_to_storage(self) -> None:
-        ACCOUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        acc_file = data_path("accounts.json")
+        acc_file.parent.mkdir(parents=True, exist_ok=True)
         data = {"accounts": []}
         for acc in self.accounts.values():
             data["accounts"].append({
@@ -67,13 +67,14 @@ class AccountManager:
                 "last_login": acc.last_login.isoformat() if acc.last_login else None,
                 "error_message": acc.error_message
             })
-        ACCOUNTS_FILE.write_text(json.dumps(data, indent=2))
+        acc_file.write_text(json.dumps(data, indent=2))
     
     def load_from_storage(self) -> None:
-        if not ACCOUNTS_FILE.exists():
+        acc_file = data_path("accounts.json")
+        if not acc_file.exists():
             return
         try:
-            data = json.loads(ACCOUNTS_FILE.read_text())
+            data = json.loads(acc_file.read_text())
             for acc_data in data.get("accounts", []):
                 account = Account(
                     email=acc_data["email"],
@@ -90,8 +91,6 @@ class AccountManager:
 
     # --- Login Temp JSON ---
 
-    TEMP_FILE = Path("data/login_temp.json")
-
     def export_to_temp(self) -> int:
         """Export all accounts (email + plain password) to login_temp.json.
         Returns number of accounts exported."""
@@ -104,16 +103,18 @@ class AccountManager:
             except ValueError:
                 # Key mismatch — skip account
                 continue
-        self.TEMP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        self.TEMP_FILE.write_text(json.dumps({"accounts": entries}, indent=2, ensure_ascii=False))
+        temp = data_path("login_temp.json")
+        temp.parent.mkdir(parents=True, exist_ok=True)
+        temp.write_text(json.dumps({"accounts": entries}, indent=2, ensure_ascii=False))
         return len(entries)
 
     def import_from_temp(self) -> tuple[int, int]:
         """Import accounts from login_temp.json.
         Returns (added, skipped) counts."""
-        if not self.TEMP_FILE.exists():
+        temp = data_path("login_temp.json")
+        if not temp.exists():
             raise FileNotFoundError("File login_temp.json không tồn tại")
-        data = json.loads(self.TEMP_FILE.read_text())
+        data = json.loads(temp.read_text())
         added, skipped = 0, 0
         for entry in data.get("accounts", []):
             email = entry.get("email", "").strip()

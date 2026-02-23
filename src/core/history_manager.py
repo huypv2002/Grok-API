@@ -5,13 +5,14 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from .models import VideoTask, VideoSettings, ImageTask, ImageSettings
+from .paths import data_path
 
-DB_PATH = Path("data/history.db")
 
 class HistoryManager:
     def __init__(self):
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(DB_PATH))
+        db = data_path("history.db")
+        db.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(db))
         self._create_table()
         self._migrate_table()
     
