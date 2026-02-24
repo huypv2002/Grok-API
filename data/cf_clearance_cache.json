@@ -1,17 +1,1 @@
-{
-  "grok.com": {
-    "cf_clearance": "vXUl0Lo1zMgmB3ZKBlQh5WyDzSdiZiBotsSUXCAOitg-1770199944-1.2.1.1-6c.ri6vX.Xy.jIJfxpo3v459tVW2pYtO0hva2dnMkgp4LXu2Xy2tLjPfQvwg.S4JcYZBw3il2wjOgP_mk8biKfAW0Os3L2CWD1fB0jy3LTy..JD2cJ5hYGM7c6_7eKi5cqFR.d4alRRxQE0Ikq60cSEEXUnBQUuRRNyotOEEQPutpOgeF9QcmX2GH6F5dDe5MhKpEBbg6rQJX9KVgXDNUWsy6tw85ZkrZm9nXDFuhEI",
-    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
-    "cookies": {
-      "_ga_8FEWB057YH": "GS2.1.s1770191226$o1$g1$t1770193744$j60$l0$h0",
-      "x-userid": "0b3c11d1-ff30-46a3-a11b-f5243cd78079",
-      "mp_ea93da913ddb66b6372b89d97b1029ac_mixpanel": "%7B%22distinct_id%22%3A%220b3c11d1-ff30-46a3-a11b-f5243cd78079%22%2C%22%24device_id%22%3A%227b7bbd8c-557c-4c41-8db3-e59d179d0fbe%22%2C%22%24initial_referrer%22%3A%22https%3A%2F%2Fgrok.com%2F%3F__cf_chl_tk%3DwnL3heOtd17yyk9RuYInRc.jq4SQzXq6t9NGNisgIWs-1770191223-1.0.1.1-LWcxf.0jptS2AX_iYiZkg7PFxJTGhouKyB6wolrfPvk%22%2C%22%24initial_referring_domain%22%3A%22grok.com%22%2C%22__mps%22%3A%7B%7D%2C%22__mpso%22%3A%7B%7D%2C%22__mpus%22%3A%7B%7D%2C%22__mpa%22%3A%7B%7D%2C%22__mpu%22%3A%7B%7D%2C%22__mpr%22%3A%5B%5D%2C%22__mpap%22%3A%5B%5D%2C%22%24user_id%22%3A%220b3c11d1-ff30-46a3-a11b-f5243cd78079%22%7D",
-      "sso-rw": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiOTcxNzhkZDEtNDZlZi00NmQxLWFhZDItYjBhMmFmMDk5ZDM5In0.T9wm5HEt7nPz85ES6qQhmLjIkaNtmIZtP32N-trpHCU",
-      "_ga": "GA1.1.1338526609.1770191227",
-      "sso": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXNzaW9uX2lkIjoiOTcxNzhkZDEtNDZlZi00NmQxLWFhZDItYjBhMmFmMDk5ZDM5In0.T9wm5HEt7nPz85ES6qQhmLjIkaNtmIZtP32N-trpHCU",
-      "i18nextLng": "vi",
-      "cf_clearance": "vXUl0Lo1zMgmB3ZKBlQh5WyDzSdiZiBotsSUXCAOitg-1770199944-1.2.1.1-6c.ri6vX.Xy.jIJfxpo3v459tVW2pYtO0hva2dnMkgp4LXu2Xy2tLjPfQvwg.S4JcYZBw3il2wjOgP_mk8biKfAW0Os3L2CWD1fB0jy3LTy..JD2cJ5hYGM7c6_7eKi5cqFR.d4alRRxQE0Ikq60cSEEXUnBQUuRRNyotOEEQPutpOgeF9QcmX2GH6F5dDe5MhKpEBbg6rQJX9KVgXDNUWsy6tw85ZkrZm9nXDFuhEI"
-    },
-    "timestamp": "2026-02-04T17:12:27.543652"
-  }
-}
+{}

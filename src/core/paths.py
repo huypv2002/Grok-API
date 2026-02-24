@@ -1,15 +1,19 @@
-"""Centralized path resolution cho Nuitka onefile trên Windows."""
+"""Centralized path resolution cho Nuitka onefile trên Windows.
+
+Strategy: tìm thư mục chứa .exe thật bằng mọi cách có thể,
+KHÔNG dùng _can_write_dir để chọn path (vì temp dir cũng writable).
+Chỉ fallback sang LOCALAPPDATA khi tạo thư mục thực sự thất bại.
+"""
 import os
 import sys
 from pathlib import Path
 
 # === Capture __nuitka_binary_dir NGAY ĐÂY ở module level ===
 # Nuitka onefile inject biến này vào __main__ globals.
-# Phải đọc qua sys.modules['__main__'] vì lúc này __main__ = main.py
 _NUITKA_BINARY_DIR: Path | None = None
 try:
     import __main__ as _main_mod
-    _nbd = getattr(_main_mod, '_NUITKA_BINARY_DIR', None)  # đã capture trong main.py
+    _nbd = getattr(_main_mod, '_NUITKA_BINARY_DIR', None)  # captured trong main.py
     if _nbd:
         _NUITKA_BINARY_DIR = Path(str(_nbd))
 except Exception:
@@ -20,16 +24,24 @@ _APP_NAME = "GrokVideoGenerator"
 
 
 def _get_exe_dir() -> Path:
-    """Lấy thư mục chứa .exe thật (không phải temp extraction dir)."""
-    # Ưu tiên 1: __nuitka_binary_dir từ main.py (đã capture ở module level)
+    """Lấy thư mục chứa .exe thật - thử tất cả cách có thể."""
+
+    # Cách 1: __nuitka_binary_dir (Nuitka onefile - chính xác nhất)
     if _NUITKA_BINARY_DIR:
         return _NUITKA_BINARY_DIR
 
-    # Ưu tiên 2: frozen (standalone/PyInstaller) - sys.executable = .exe gốc
+    # Cách 2: sys.argv[0] - path exe được gọi (Windows double-click)
+    # Trên Nuitka onefile: sys.argv[0] = path tới .exe gốc
+    if sys.argv and sys.argv[0]:
+        p = Path(sys.argv[0]).resolve()
+        if p.suffix.lower() in ('.exe', '') and p.exists():
+            return p.parent
+
+    # Cách 3: sys.executable (frozen mode)
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).resolve().parent
 
-    # Dev mode
+    # Dev mode: __file__ của main.py
     try:
         import __main__ as _m
         f = getattr(_m, '__file__', None)
@@ -37,27 +49,25 @@ def _get_exe_dir() -> Path:
             return Path(f).resolve().parent
     except Exception:
         pass
+
     return Path.cwd()
 
 
-def _can_write_dir(directory: Path) -> bool:
-    """Test quyền ghi thực tế vào 1 thư mục."""
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-        test = directory / ".write_test_grok"
-        test.write_text("ok", encoding="utf-8")
-        test.unlink()
-        return True
-    except Exception:
-        return False
+def _get_fallback_dir() -> Path:
+    """Fallback dir khi không ghi được cạnh exe."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base) / _APP_NAME
+        return Path.home() / "AppData" / "Local" / _APP_NAME
+    return Path.home() / f".{_APP_NAME}"
 
 
 def get_app_dir() -> Path:
     """Trả về thư mục gốc chứa data/ và output/.
-    
-    1. Thử cạnh exe trước
-    2. Fallback: %LOCALAPPDATA%/GrokVideoGenerator (Windows)
-                 ~/.GrokVideoGenerator (Mac/Linux)
+
+    Luôn ưu tiên thư mục cạnh exe.
+    Chỉ fallback sang LOCALAPPDATA khi mkdir thực sự fail.
     """
     global _app_dir
     if _app_dir is not None:
@@ -65,30 +75,27 @@ def get_app_dir() -> Path:
 
     exe_dir = _get_exe_dir()
 
-    # Ưu tiên 1: cạnh exe
-    if _can_write_dir(exe_dir / "data"):
+    # Thử tạo data/ cạnh exe
+    try:
+        (exe_dir / "data").mkdir(parents=True, exist_ok=True)
         _app_dir = exe_dir
         return _app_dir
+    except OSError:
+        pass
 
-    # Ưu tiên 2: fallback OS-specific
-    if sys.platform == "win32":
-        # %LOCALAPPDATA% tốt hơn %APPDATA% vì không sync qua roaming profile
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
-        if base:
-            fallback = Path(base) / _APP_NAME
-        else:
-            fallback = Path.home() / "AppData" / "Local" / _APP_NAME
-    else:
-        fallback = Path.home() / f".{_APP_NAME}"
-
-    if _can_write_dir(fallback / "data"):
+    # Fallback: LOCALAPPDATA / home
+    fallback = _get_fallback_dir()
+    try:
+        (fallback / "data").mkdir(parents=True, exist_ok=True)
         _app_dir = fallback
         return _app_dir
+    except OSError:
+        pass
 
-    # Ưu tiên 3: home dir (last resort)
-    fallback_home = Path.home() / _APP_NAME
-    fallback_home.mkdir(parents=True, exist_ok=True)
-    _app_dir = fallback_home
+    # Last resort: home dir
+    last = Path.home() / _APP_NAME
+    last.mkdir(parents=True, exist_ok=True)
+    _app_dir = last
     return _app_dir
 
 
@@ -107,24 +114,15 @@ def output_path(*parts: str) -> Path:
 
 
 def ensure_dirs():
-    """Tạo tất cả thư mục và file JSON mặc định.
-    
-    Raises RuntimeError nếu thất bại.
-    """
+    """Tạo tất cả thư mục và file JSON mặc định."""
     app_dir = get_app_dir()
 
-    # Tạo thư mục
     for d in [data_path(), data_path("profiles"), output_path()]:
         try:
             d.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            raise RuntimeError(
-                f"Không thể tạo thư mục: {d}\n"
-                f"App dir: {app_dir}\n"
-                f"Lỗi: {e}"
-            )
+            raise RuntimeError(f"Không thể tạo thư mục: {d}\nApp dir: {app_dir}\nLỗi: {e}")
 
-    # Tạo file JSON mặc định
     defaults = {
         data_path("accounts.json"): "[]",
         data_path("login_temp.json"): "{}",
@@ -136,7 +134,4 @@ def ensure_dirs():
             if not fpath.exists():
                 fpath.write_text(content, encoding="utf-8")
         except OSError as e:
-            raise RuntimeError(
-                f"Không thể tạo file: {fpath}\n"
-                f"Lỗi: {e}"
-            )
+            raise RuntimeError(f"Không thể tạo file: {fpath}\nLỗi: {e}")
