@@ -35,17 +35,9 @@ jobs:
         run: |
           pip install --upgrade pip wheel setuptools
           pip install -r requirements.txt
-
-          # Sub-dependencies (not in requirements.txt but needed for Nuitka to bundle)
-          pip install httpcore certifi anyio sniffio h11 idna
-          pip install urllib3 charset-normalizer
-          pip install cffi pycparser
-          pip install chromedriver-autoinstaller
-
-          # Build tools
           pip install nuitka ordered-set zstandard
       
-      - name: Verify all imports
+      - name: Verify third-party imports
         run: |
           python -c "
           import sys
@@ -54,18 +46,11 @@ jobs:
           modules = [
               'PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui',
               'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets',
-              'httpx', 'httpcore', 'certifi', 'anyio', 'sniffio', 'h11', 'idna',
-              'requests', 'urllib3', 'charset_normalizer',
-              'curl_cffi', 'curl_cffi.requests',
-              'cryptography', 'cryptography.fernet', 'cffi', '_cffi_backend',
-              'pydantic',
-              'selenium', 'selenium.webdriver', 'undetected_chromedriver',
+              'httpx', 'curl_cffi', 'cryptography', 'cryptography.fernet',
+              'pydantic', 'selenium', 'undetected_chromedriver',
               'zendriver', 'websockets', 'emoji', 'grapheme',
-              'latest_user_agents', 'user_agents',
-              'sqlite3', 'ctypes', 'asyncio', 'hashlib', 'uuid', 'json',
-              'dataclasses', 'pathlib', 'logging', 'subprocess', 'glob',
-              'platform', 'math', 'random', 'base64', 're', 'os',
-              'setuptools', 'setuptools._distutils',
+              'latest_user_agents', 'user_agents', 'requests',
+              'setuptools', '_cffi_backend',
           ]
           for mod in modules:
               try:
@@ -81,59 +66,24 @@ jobs:
               sys.exit(1)
           print(f'\nAll {len(modules)} modules OK!')
           "
-
       - name: Prepare package data paths
         id: pkg_paths
         run: |
-          # Get grapheme data dir (normalize to forward slashes for Nuitka)
-          $raw = (python -c "import grapheme, os; print(os.path.dirname(grapheme.__file__))").Trim()
-          $grapheme_dir = $raw -replace '\\', '/'
-          echo "GRAPHEME_DIR=$grapheme_dir" >> $env:GITHUB_OUTPUT
-          echo "grapheme dir: $grapheme_dir"
-
-          # Verify data files exist
-          $data_dir = Join-Path $raw "data"
-          if (Test-Path $data_dir) {
-            echo "OK: grapheme/data found"
-            Get-ChildItem $data_dir
-          } else {
-            echo "ERROR: grapheme/data NOT found at $data_dir"
-            exit 1
-          }
-
-          # Get emoji data dir
-          $emoji_raw = (python -c "import emoji, os; print(os.path.dirname(emoji.__file__))").Trim()
-          $emoji_dir = $emoji_raw -replace '\\', '/'
-          echo "EMOJI_DIR=$emoji_dir" >> $env:GITHUB_OUTPUT
-          echo "emoji dir: $emoji_dir"
-
-          # Get certifi CA bundle dir
-          $certifi_raw = (python -c "import certifi, os; print(os.path.dirname(certifi.__file__))").Trim()
-          $certifi_dir = $certifi_raw -replace '\\', '/'
-          echo "CERTIFI_DIR=$certifi_dir" >> $env:GITHUB_OUTPUT
-          echo "certifi dir: $certifi_dir"
-
-          # Get curl_cffi dir (contains .dll/.so native libs)
+          # Get curl_cffi dir (contains native .dll libs needed for --include-data-dir)
           $curl_raw = (python -c "import curl_cffi, os; print(os.path.dirname(curl_cffi.__file__))").Trim()
           $curl_dir = $curl_raw -replace '\\', '/'
           echo "CURL_CFFI_DIR=$curl_dir" >> $env:GITHUB_OUTPUT
           echo "curl_cffi dir: $curl_dir"
-
           # Get CPU count
           $cpu = $env:NUMBER_OF_PROCESSORS
           if (-not $cpu) { $cpu = "4" }
           echo "CPU_COUNT=$cpu" >> $env:GITHUB_OUTPUT
           echo "CPU cores: $cpu"
-
       - name: Build with Nuitka
         run: |
-          $grapheme_dir = "${{ steps.pkg_paths.outputs.GRAPHEME_DIR }}"
           $curl_cffi_dir = "${{ steps.pkg_paths.outputs.CURL_CFFI_DIR }}"
           $cpu = "${{ steps.pkg_paths.outputs.CPU_COUNT }}"
           echo "Building with $cpu jobs..."
-          echo "grapheme_dir = $grapheme_dir"
-          echo "curl_cffi_dir = $curl_cffi_dir"
-
           python -m nuitka `
             --standalone `
             --onefile `
@@ -142,46 +92,26 @@ jobs:
             --enable-plugin=pyside6 `
             --jobs=$cpu `
             --include-package=src `
-            --include-package=src.core `
-            --include-package=src.gui `
             --include-package=httpx `
             --include-package=httpcore `
             --include-package=anyio `
-            --include-package=anyio._backends `
             --include-package=requests `
             --include-package=urllib3 `
             --include-package=charset_normalizer `
             --include-package=curl_cffi `
             --include-package=pydantic `
-            --include-package=pydantic.deprecated `
             --include-package=cryptography `
-            --include-package=cryptography.hazmat `
-            --include-package=cryptography.hazmat.primitives `
-            --include-package=cryptography.hazmat.backends `
             --include-package=selenium `
-            --include-package=selenium.webdriver `
-            --include-package=selenium.webdriver.common `
-            --include-package=selenium.webdriver.chrome `
             --include-package=undetected_chromedriver `
             --include-package=chromedriver_autoinstaller `
             --include-package=setuptools `
-            --include-package=setuptools._distutils `
-            --include-package=setuptools._distutils.version `
             --include-package=zendriver `
-            --include-package=zendriver.core `
-            --include-package=zendriver.cdp `
             --include-package=websockets `
-            --include-package=websockets.legacy `
             --include-package=emoji `
             --include-package=grapheme `
             --include-package=latest_user_agents `
             --include-package=user_agents `
             --include-module=_cffi_backend `
-            --include-module=sqlite3 `
-            --include-module=ctypes `
-            --include-module=platform `
-            --include-module=hashlib `
-            --include-module=base64 `
             --include-module=PySide6.QtMultimedia `
             --include-module=PySide6.QtMultimediaWidgets `
             --include-package-data=PySide6 `
@@ -198,7 +128,6 @@ jobs:
             --include-package-data=latest_user_agents `
             --include-package-data=user_agents `
             --include-package-data=chromedriver_autoinstaller `
-            --include-data-dir="$grapheme_dir/data=grapheme/data" `
             --include-data-dir="$curl_cffi_dir=curl_cffi" `
             --nofollow-import-to=tkinter `
             --nofollow-import-to=_tkinter `
@@ -220,7 +149,6 @@ jobs:
             --no-pyi-file `
             --assume-yes-for-downloads `
             main.py
-
       - name: Verify output
         run: |
           if (Test-Path "GrokVideoGenerator.exe") {
@@ -229,7 +157,6 @@ jobs:
             echo "Build successful! Size: ${sizeMB} MB"
           } else {
             echo "ERROR: GrokVideoGenerator.exe not found!"
-            # Search for it
             Get-ChildItem -Recurse -Filter "GrokVideoGenerator.exe" | ForEach-Object { echo $_.FullName }
             exit 1
           }
