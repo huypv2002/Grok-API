@@ -32,6 +32,14 @@ jobs:
           path: ~\AppData\Local\pip\Cache
           key: pip-win-py313-${{ hashFiles('requirements.txt') }}
           restore-keys: pip-win-py313-
+
+      - name: Cache Nuitka compilation
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Nuitka\Nuitka\Cache
+          key: nuitka-win-py313-${{ hashFiles('main.py', 'src/**/*.py', 'requirements.txt') }}
+          restore-keys: |
+            nuitka-win-py313-
       
       - name: Install dependencies
         run: |
@@ -93,6 +101,7 @@ jobs:
             --output-filename=GrokVideoGenerator.exe `
             --enable-plugin=pyside6 `
             --jobs=$cpu `
+            --lto=no `
             --include-package=src `
             --include-package=httpx `
             --include-package=httpcore `
