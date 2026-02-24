@@ -1,46 +1,42 @@
-"""Centralized path resolution cho Nuitka onefile trên Windows.
-
-Ưu tiên: tạo data/ cạnh file .exe thật.
-Fallback: %LOCALAPPDATA%/GrokVideoGenerator/ (Windows) hoặc ~/.GrokVideoGenerator/ (khác).
-
-QUAN TRỌNG - Nuitka onefile:
-  - sys.executable = đường dẫn tới file .exe GỐC (ĐÚNG)
-  - __file__, __main__ = temp extraction dir (SAI cho data storage)
-  - __nuitka_binary_dir = thư mục chứa .exe (ĐÚNG, nhưng không phải lúc nào cũng có)
-  
-Vì vậy luôn dùng sys.executable làm anchor chính.
-"""
+"""Centralized path resolution cho Nuitka onefile trên Windows."""
 import os
 import sys
 from pathlib import Path
 
-_app_dir: Path | None = None
+# === Capture __nuitka_binary_dir NGAY ĐÂY ở module level ===
+# Nuitka onefile inject biến này vào __main__ globals.
+# Phải đọc qua sys.modules['__main__'] vì lúc này __main__ = main.py
+_NUITKA_BINARY_DIR: Path | None = None
+try:
+    import __main__ as _main_mod
+    _nbd = getattr(_main_mod, '_NUITKA_BINARY_DIR', None)  # đã capture trong main.py
+    if _nbd:
+        _NUITKA_BINARY_DIR = Path(str(_nbd))
+except Exception:
+    pass
 
-# Tên app cho fallback dir
+_app_dir: Path | None = None
 _APP_NAME = "GrokVideoGenerator"
 
 
 def _get_exe_dir() -> Path:
-    """Lấy thư mục chứa file .exe thật (KHÔNG phải temp dir).
-    
-    Nuitka onefile: sys.executable = path tới .exe gốc trên disk
-    Nuitka standalone: sys.executable = path tới .exe 
-    Dev mode: thư mục chứa main.py (hoặc CWD)
-    """
+    """Lấy thư mục chứa .exe thật (không phải temp extraction dir)."""
+    # Ưu tiên 1: __nuitka_binary_dir từ main.py (đã capture ở module level)
+    if _NUITKA_BINARY_DIR:
+        return _NUITKA_BINARY_DIR
+
+    # Ưu tiên 2: frozen (standalone/PyInstaller) - sys.executable = .exe gốc
     if getattr(sys, 'frozen', False):
-        # frozen = True cho cả Nuitka standalone, onefile, và PyInstaller
-        # sys.executable luôn trỏ tới file .exe GỐC, không phải temp
         return Path(sys.executable).resolve().parent
-    
-    # Dev mode - dùng __file__ của main.py nếu có, fallback CWD
+
+    # Dev mode
     try:
-        import __main__
-        main_file = getattr(__main__, '__file__', None)
-        if main_file:
-            return Path(main_file).resolve().parent
+        import __main__ as _m
+        f = getattr(_m, '__file__', None)
+        if f:
+            return Path(f).resolve().parent
     except Exception:
         pass
-    
     return Path.cwd()
 
 

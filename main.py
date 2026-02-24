@@ -3,9 +3,16 @@
 import sys
 import os
 
+# === Nuitka onefile: __nuitka_binary_dir là global var trong __main__ ===
+# Phải capture NGAY ĐÂY ở module level, trước khi bất kỳ function nào chạy
+_NUITKA_BINARY_DIR = None
+try:
+    # noinspection PyUnresolvedReferences
+    _NUITKA_BINARY_DIR = __nuitka_binary_dir  # type: ignore[name-defined]
+except NameError:
+    pass
+
 # === Python 3.13 compat: distutils bị xóa khỏi stdlib ===
-# undetected_chromedriver.patcher dòng 4: import distutils
-# Phải patch TRƯỚC khi bất kỳ import nào chạm tới undetected_chromedriver
 try:
     import distutils  # noqa: F401
 except ModuleNotFoundError:
@@ -21,11 +28,17 @@ except ModuleNotFoundError:
 def get_app_dir():
     """Lấy thư mục chứa exe thật.
     
-    Nuitka onefile: sys.executable = đường dẫn .exe GỐC (không phải temp)
-    Dev: __file__ = đường dẫn main.py
+    Nuitka onefile: __nuitka_binary_dir (captured at module level) = thư mục chứa .exe GỐC
+    Nuitka standalone / PyInstaller: sys.executable.parent
+    Dev: __file__.parent
     """
+    # Nuitka onefile - đây là cách DUY NHẤT đáng tin cậy
+    if _NUITKA_BINARY_DIR:
+        return str(_NUITKA_BINARY_DIR)
+    # Frozen (standalone hoặc PyInstaller)
     if getattr(sys, 'frozen', False):
         return os.path.dirname(os.path.abspath(sys.executable))
+    # Dev mode
     return os.path.dirname(os.path.abspath(__file__))
 
 
