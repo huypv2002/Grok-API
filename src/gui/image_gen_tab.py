@@ -18,9 +18,6 @@ from ..core.image_generator import MultiTabImageGenerator, ZENDRIVER_AVAILABLE
 from ..core.history_manager import HistoryManager
 from ..core.models import ImageSettings, ImageTask
 
-# Import video limit helpers từ video_gen_tab
-from .video_gen_tab import _get_app_username, _check_video_limit, _record_video_usage
-
 
 SETTINGS_FILE = None  # Resolved lazily via paths module
 DEFAULT_OUTPUT_DIR = None  # Resolved lazily via paths module
@@ -814,21 +811,6 @@ class ImageGenTab(QWidget):
             QMessageBox.warning(self, "Lỗi", "Không có prompt hợp lệ!")
             return
 
-        # Check video limit trước khi bắt đầu
-        app_user = _get_app_username()
-        if app_user:
-            limit_info = _check_video_limit(app_user)
-            if limit_info.get("ok") and not limit_info.get("can_generate", True):
-                QMessageBox.warning(self, "Hết quota", f"Đã hết quota! Đã dùng {limit_info.get('videos_used', 0)}/{limit_info.get('video_limit', 0)}.\nLiên hệ admin để nâng limit.")
-                return
-            remaining = limit_info.get("remaining")
-            if remaining is not None and len(all_items) > remaining:
-                if remaining == 0:
-                    QMessageBox.warning(self, "Hết quota", f"Đã hết quota! Liên hệ admin.")
-                    return
-                all_items = all_items[:remaining]
-                self._log(f"⚠️ Chỉ tạo {remaining} ảnh (giới hạn quota)")
-
         # Get selected accounts
         selected = self._get_selected_accounts()
         if not selected:
@@ -974,9 +956,6 @@ class ImageGenTab(QWidget):
                 print(f"History save error: {e}")
 
             self.image_completed.emit()
-
-            # Record usage lên server
-            _record_video_usage(_get_app_username())
         else:
             self.failed_tasks.append(task)
 

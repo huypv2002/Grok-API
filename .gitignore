@@ -16,7 +16,16 @@ data/profiles/
 data/*.db
 data/*.key
 data/*.png
+data/login_temp.json
 output/
+
+# Sensitive
+hotmails*.txt
+*.hotmail*
+tools/*output*
+tools/*parsed*
+tools/credit_cards*
+tools/test_*.py
 
 # IDE
 .idea/
