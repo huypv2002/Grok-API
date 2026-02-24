@@ -22,6 +22,42 @@ from ..core.video_generator import VideoGenerator, MultiTabVideoGenerator, ZENDR
 from ..core.history_manager import HistoryManager
 from ..core.grok_api import GrokAPI, VIDEO_DOWNLOAD_URL
 
+# Auth API — check video limit & record usage
+_AUTH_API_BASE = "https://grok-auth-api.kh431248.workers.dev"
+
+def _get_app_username() -> str:
+    """Lấy app username từ login_temp.json."""
+    try:
+        from ..core.paths import data_path
+        f = data_path("login_temp.json")
+        if f.exists():
+            import json as _json
+            return _json.loads(f.read_text()).get("username", "")
+    except Exception:
+        pass
+    return ""
+
+def _check_video_limit(username: str) -> dict:
+    """Check video limit từ server. Returns dict với can_generate, remaining, etc."""
+    if not username:
+        return {"ok": True, "can_generate": True, "remaining": None}
+    try:
+        import httpx
+        r = httpx.post(f"{_AUTH_API_BASE}/check-limit", json={"username": username}, timeout=10)
+        return r.json()
+    except Exception:
+        return {"ok": True, "can_generate": True, "remaining": None}  # Lỗi mạng → không block
+
+def _record_video_usage(username: str, count: int = 1):
+    """Ghi nhận video đã tạo thành công."""
+    if not username:
+        return
+    try:
+        import httpx
+        httpx.post(f"{_AUTH_API_BASE}/record-usage", json={"username": username, "count": count}, timeout=10)
+    except Exception:
+        pass
+
 
 class VideoPreviewDialog(QDialog):
     """Dialog xem trước video đã download."""
@@ -266,6 +302,26 @@ class APIAccountWorker(QThread):
             f" | {self.settings.aspect_ratio} {self.settings.video_length}s {self.settings.resolution}"
         )
 
+        # Check video limit trước khi bắt đầu
+        app_user = _get_app_username()
+        if app_user:
+            limit_info = _check_video_limit(app_user)
+            if limit_info.get("ok") and not limit_info.get("can_generate", True):
+                self.status_update.emit(email, f"❌ Đã hết quota video! Đã dùng {limit_info.get('videos_used', 0)}/{limit_info.get('video_limit', 0)}. Liên hệ admin.")
+                self.all_finished.emit(email)
+                return
+            remaining = limit_info.get("remaining")
+            if remaining is not None:
+                self.status_update.emit(email, f"📊 Video còn lại: {remaining}/{limit_info.get('video_limit', '∞')}")
+                if total > remaining:
+                    total = remaining
+                    self.status_update.emit(email, f"⚠️ Chỉ tạo {total} video (giới hạn quota)")
+                    self.prompts = self.prompts[:total]
+                    if total == 0:
+                        self.status_update.emit(email, f"❌ Đã hết quota video!")
+                        self.all_finished.emit(email)
+                        return
+
         try:
             with ThreadPoolExecutor(max_workers=self.num_tabs) as pool:
                 futures = {}
@@ -482,6 +538,9 @@ class APIAccountWorker(QThread):
             task.account_cookies = cookies
             if output_path:
                 task.output_path = output_path
+
+            # Record usage lên server
+            _record_video_usage(_get_app_username())
 
             self.step_progress.emit(email, idx, 100)
             self.status_update.emit(email, f"[{idx+1}/{total}] ✅ {post_id[:12]}...")
