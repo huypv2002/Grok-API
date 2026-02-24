@@ -9,15 +9,19 @@ _app_dir: Path | None = None
 def get_app_dir() -> Path:
     """Lấy thư mục gốc chứa data/ và output/.
     
-    Nuitka onefile: dùng __nuitka_binary_dir từ __main__
-    Frozen (.exe): dùng sys.executable.parent  
+    Standalone mode: sys.executable nằm cạnh data/, không cần __nuitka_binary_dir
     Dev mode: dùng __main__.__file__.parent
     """
     global _app_dir
     if _app_dir is not None:
         return _app_dir
 
-    # 1. Nuitka onefile: __nuitka_binary_dir (set trong main.py)
+    # 1. Frozen exe (Nuitka standalone / PyInstaller) - sys.executable = exe thật
+    if getattr(sys, 'frozen', False):
+        _app_dir = Path(sys.executable).resolve().parent
+        return _app_dir
+
+    # 2. Nuitka onefile fallback: __nuitka_binary_dir
     try:
         import __main__ as _m
         nbd = getattr(_m, '_NUITKA_BINARY_DIR', None)
@@ -28,11 +32,6 @@ def get_app_dir() -> Path:
                 return _app_dir
     except Exception:
         pass
-
-    # 2. Frozen exe (Nuitka standalone / PyInstaller)
-    if getattr(sys, 'frozen', False):
-        _app_dir = Path(sys.executable).resolve().parent
-        return _app_dir
 
     # 3. Dev mode
     try:

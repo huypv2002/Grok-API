@@ -74,7 +74,6 @@ echo.
 
 python -m nuitka ^
     --standalone ^
-    --onefile ^
     --windows-console-mode=force ^
     --output-filename=GrokVideoGenerator.exe ^
     --enable-plugin=pyside6 ^
@@ -172,13 +171,35 @@ echo.
 echo ============================================
 echo   BUILD THANH CONG!
 echo ============================================
-if exist GrokVideoGenerator.exe (
-    for %%A in (GrokVideoGenerator.exe) do echo File: %%~fA  Size: %%~zA bytes
-) else (
-    echo [WARN] File GrokVideoGenerator.exe khong tim thay o thu muc hien tai
+
+:: Tạo sẵn data folders và JSON files trong dist
+set DIST_DIR=main.dist
+if not exist "%DIST_DIR%\GrokVideoGenerator.exe" (
+    echo [WARN] File GrokVideoGenerator.exe khong tim thay o %DIST_DIR%
     echo Tim kiem...
     dir /s /b GrokVideoGenerator.exe 2>nul
+    pause
+    exit /b 1
 )
+
+echo [5/5] Tao san data folders va JSON files...
+mkdir "%DIST_DIR%\data" 2>nul
+mkdir "%DIST_DIR%\data\profiles" 2>nul
+mkdir "%DIST_DIR%\output" 2>nul
+echo {"accounts": []}> "%DIST_DIR%\data\accounts.json"
+echo {}> "%DIST_DIR%\data\login_temp.json"
+echo {}> "%DIST_DIR%\data\settings.json"
+echo {}> "%DIST_DIR%\data\cf_clearance_cache.json"
+echo [OK] Data structure created.
+
+:: Rename và thông báo
+ren "%DIST_DIR%" GrokVideoGenerator
+echo.
+echo ============================================
+echo   DONE! Folder: GrokVideoGenerator\
+echo   Chay: GrokVideoGenerator\GrokVideoGenerator.exe
+echo ============================================
+for %%A in (GrokVideoGenerator\GrokVideoGenerator.exe) do echo File: %%~fA  Size: %%~zA bytes
 echo.
 echo Build xong luc: %date% %time%
 pause

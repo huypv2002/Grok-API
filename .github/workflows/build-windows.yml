@@ -2,16 +2,9 @@ name: Build Windows EXE
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag (e.g., v1.0.0)'
-        required: false
-        default: 'dev'
 
 jobs:
   build-windows:
@@ -38,65 +31,31 @@ jobs:
         with:
           path: ~\AppData\Local\Nuitka\Nuitka\Cache
           key: nuitka-win-py313-${{ hashFiles('main.py', 'src/**/*.py', 'requirements.txt') }}
-          restore-keys: |
-            nuitka-win-py313-
+          restore-keys: nuitka-win-py313-
       
       - name: Install dependencies
         run: |
           pip install --upgrade pip wheel setuptools
           pip install -r requirements.txt
           pip install nuitka ordered-set zstandard
-      
-      - name: Verify third-party imports
-        run: |
-          python -c "
-          import sys
-          print(f'Python {sys.version}')
-          errors = []
-          modules = [
-              'PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui',
-              'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets',
-              'httpx', 'curl_cffi', 'cryptography', 'cryptography.fernet',
-              'pydantic', 'selenium', 'undetected_chromedriver',
-              'zendriver', 'websockets', 'emoji', 'grapheme',
-              'latest_user_agents', 'user_agents', 'requests',
-              'setuptools', '_cffi_backend',
-          ]
-          for mod in modules:
-              try:
-                  __import__(mod)
-                  print(f'  OK: {mod}')
-              except ImportError as e:
-                  print(f'  FAIL: {mod} -> {e}')
-                  errors.append(f'{mod}: {e}')
-          if errors:
-              print(f'\n=== {len(errors)} MISSING MODULES ===')
-              for e in errors:
-                  print(f'  {e}')
-              sys.exit(1)
-          print(f'\nAll {len(modules)} modules OK!')
-          "
+
       - name: Prepare package data paths
         id: pkg_paths
         run: |
-          # Get curl_cffi dir (contains native .dll libs needed for --include-data-dir)
           $curl_raw = (python -c "import curl_cffi, os; print(os.path.dirname(curl_cffi.__file__))").Trim()
           $curl_dir = $curl_raw -replace '\\', '/'
           echo "CURL_CFFI_DIR=$curl_dir" >> $env:GITHUB_OUTPUT
-          echo "curl_cffi dir: $curl_dir"
-          # Get CPU count
           $cpu = $env:NUMBER_OF_PROCESSORS
           if (-not $cpu) { $cpu = "4" }
           echo "CPU_COUNT=$cpu" >> $env:GITHUB_OUTPUT
-          echo "CPU cores: $cpu"
-      - name: Build with Nuitka
+
+      - name: Build with Nuitka (standalone)
         run: |
           $curl_cffi_dir = "${{ steps.pkg_paths.outputs.CURL_CFFI_DIR }}"
           $cpu = "${{ steps.pkg_paths.outputs.CPU_COUNT }}"
-          echo "Building with $cpu jobs..."
+          echo "Building standalone with $cpu jobs..."
           python -m nuitka `
             --standalone `
-            --onefile `
             --windows-console-mode=force `
             --output-filename=GrokVideoGenerator.exe `
             --enable-plugin=pyside6 `
@@ -160,59 +119,91 @@ jobs:
             --no-pyi-file `
             --assume-yes-for-downloads `
             main.py
-      - name: Verify output
+
+      - name: Create data folders and default JSON files
         run: |
-          if (Test-Path "GrokVideoGenerator.exe") {
-            $size = (Get-Item "GrokVideoGenerator.exe").Length
+          $dist = "main.dist"
+          echo "=== Creating pre-built data structure in $dist ==="
+          
+          # Tạo folders
+          New-Item -ItemType Directory -Force -Path "$dist\data"
+          New-Item -ItemType Directory -Force -Path "$dist\data\profiles"
+          New-Item -ItemType Directory -Force -Path "$dist\output"
+          
+          # Tạo file JSON mặc định
+          '{"accounts": []}' | Out-File -Encoding utf8 "$dist\data\accounts.json"
+          '{}' | Out-File -Encoding utf8 "$dist\data\login_temp.json"
+          '{}' | Out-File -Encoding utf8 "$dist\data\settings.json"
+          '{}' | Out-File -Encoding utf8 "$dist\data\cf_clearance_cache.json"
+          
+          # Verify
+          echo "=== Files created ==="
+          Get-ChildItem -Recurse "$dist\data" | ForEach-Object { echo "  $($_.FullName)" }
+          Get-ChildItem "$dist\output" | ForEach-Object { echo "  $($_.FullName)" }
+
+      - name: Verify build output
+        run: |
+          $exe = "main.dist\GrokVideoGenerator.exe"
+          if (Test-Path $exe) {
+            $size = (Get-Item $exe).Length
             $sizeMB = [math]::Round($size / 1MB, 2)
-            echo "Build successful! Size: ${sizeMB} MB"
+            echo "Build OK! EXE size: ${sizeMB} MB"
+            $totalFiles = (Get-ChildItem -Recurse "main.dist" | Measure-Object).Count
+            echo "Total files in dist: $totalFiles"
           } else {
-            echo "ERROR: GrokVideoGenerator.exe not found!"
-            Get-ChildItem -Recurse -Filter "GrokVideoGenerator.exe" | ForEach-Object { echo $_.FullName }
+            echo "ERROR: GrokVideoGenerator.exe not found in main.dist!"
+            Get-ChildItem -Recurse "main.dist" -Filter "*.exe" | ForEach-Object { echo $_.FullName }
             exit 1
           }
 
-      - name: Smoke test - check exe starts
+      - name: Smoke test
         run: |
           echo "=== Smoke test ==="
-          $proc = Start-Process -FilePath ".\GrokVideoGenerator.exe" -PassThru -NoNewWindow
+          $proc = Start-Process -FilePath "main.dist\GrokVideoGenerator.exe" -WorkingDirectory "main.dist" -PassThru -NoNewWindow
           Start-Sleep -Seconds 8
           
-          # Check crash log in %TEMP%
+          # Check crash log
           $crashLog = "$env:TEMP\GrokVideoGenerator_crash.log"
           if (Test-Path $crashLog) {
-            echo "=== TEMP crash log ==="
+            echo "=== Crash log ==="
             Get-Content $crashLog
           }
           
-          # Check data/ folder created next to exe
-          if (Test-Path "data") {
-            echo "=== data/ folder OK ==="
-            Get-ChildItem "data" | ForEach-Object { echo "  $($_.Name)" }
-          } else {
-            echo "WARN: data/ folder NOT created next to exe"
+          # Check data files
+          if (Test-Path "main.dist\data\accounts.json") {
+            echo "=== data/accounts.json OK ==="
+            Get-Content "main.dist\data\accounts.json"
           }
           
           if ($proc.HasExited) {
-            echo "Process exited with code $($proc.ExitCode)"
+            echo "Process exited: code $($proc.ExitCode)"
           } else {
             echo "OK: Process running (PID $($proc.Id))"
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           }
-          echo "=== Smoke test done ==="
+
+      - name: Package as ZIP
+        run: |
+          # Rename dist folder
+          Rename-Item "main.dist" "GrokVideoGenerator"
+          # Zip
+          Compress-Archive -Path "GrokVideoGenerator" -DestinationPath "GrokVideoGenerator-windows.zip" -Force
+          $size = (Get-Item "GrokVideoGenerator-windows.zip").Length
+          $sizeMB = [math]::Round($size / 1MB, 2)
+          echo "ZIP size: ${sizeMB} MB"
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: GrokVideoGenerator-windows
-          path: GrokVideoGenerator.exe
+          path: GrokVideoGenerator-windows.zip
           retention-days: 30
       
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
-          files: GrokVideoGenerator.exe
+          files: GrokVideoGenerator-windows.zip
           draft: false
           prerelease: false
         env:

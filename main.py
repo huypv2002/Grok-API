@@ -3,7 +3,8 @@
 import sys
 import os
 
-# === BƯỚC 1: Capture __nuitka_binary_dir NGAY LẬP TỨC ===
+# === BƯỚC 1: Xác định thư mục exe ===
+# Standalone mode: sys.executable nằm cạnh DLLs, không cần __nuitka_binary_dir
 _NUITKA_BINARY_DIR = None
 try:
     _NUITKA_BINARY_DIR = __nuitka_binary_dir  # type: ignore[name-defined]
