@@ -289,6 +289,8 @@ class APIAccountWorker(QThread):
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        MAX_RETRIES = 3  # Retry tối đa 3 lần trước khi đánh failed
+
         email = self.account.email
         cookies = dict(self.account.cookies) if self.account.cookies else {}
 
@@ -304,13 +306,51 @@ class APIAccountWorker(QThread):
             f" | {self.settings.aspect_ratio} {self.settings.video_length}s {self.settings.resolution}"
         )
 
+        def _process_with_retry(cookies, item, i, total):
+            """Wrapper retry 3 lần cho _process_one — chỉ emit failed task sau lần cuối"""
+            for attempt in range(1, MAX_RETRIES + 1):
+                if self._stopped:
+                    return
+                try:
+                    self._process_one(cookies, item, i, total)
+                    return  # Thành công → thoát
+                except Exception as e:
+                    if attempt < MAX_RETRIES:
+                        self.status_update.emit(
+                            email,
+                            f"   🔄 [{i+1}/{total}] Retry {attempt}/{MAX_RETRIES} sau 5s... ({str(e)[:60]})"
+                        )
+                        # Reset progress bar về 0 cho lần retry tiếp
+                        self.step_progress.emit(email, i, 0)
+                        time.sleep(5)
+                    else:
+                        # Hết retry → emit failed task + raise
+                        self.status_update.emit(
+                            email,
+                            f"   ❌ [{i+1}/{total}] Failed sau {MAX_RETRIES} lần retry: {str(e)[:80]}"
+                        )
+                        from ..core.models import VideoTask
+                        prompt = item[0] if isinstance(item, tuple) else item
+                        image_path = item[1] if isinstance(item, tuple) and len(item) > 1 else None
+                        failed_task = VideoTask(
+                            account_email=email,
+                            prompt=prompt,
+                            image_path=image_path,
+                            settings=self.settings,
+                            status="failed",
+                            error_message=f"Failed sau {MAX_RETRIES} retries: {str(e)[:100]}",
+                        )
+                        self.step_progress.emit(email, i, -1)
+                        self.task_completed.emit(email, failed_task)
+                        raise
+
         try:
             with ThreadPoolExecutor(max_workers=self.num_tabs) as pool:
                 futures = {}
                 for i, item in enumerate(self.prompts):
                     if self._stopped:
                         break
-                    fut = pool.submit(self._process_one, cookies, item, i, total)
+                    fut = pool.submit(_process_with_retry, cookies, item, i, total)
                     futures[fut] = i
                     # Stagger delay 4s giữa các task — tránh 429 rate limit
                     if i < total - 1:
@@ -329,6 +369,7 @@ class APIAccountWorker(QThread):
             self.status_update.emit(email, f"❌ Error: {e}")
 
         self.all_finished.emit(email)
+
 
     def _process_one(self, cookies, item, idx, total):
         """Xử lý 1 video — chạy trong thread pool.
@@ -385,11 +426,7 @@ class APIAccountWorker(QThread):
                     on_status=lambda msg, e=email: self.status_update.emit(e, msg),
                 )
                 if not file_id:
-                    task.status = "failed"
-                    task.error_message = "Upload image failed"
-                    self.step_progress.emit(email, idx, -1)
-                    self.task_completed.emit(email, task)
-                    return
+                    raise RuntimeError("Upload image failed")
 
                 # Step 1b: Check asset ready
                 self.step_progress.emit(email, idx, 13)
@@ -402,11 +439,7 @@ class APIAccountWorker(QThread):
                     on_status=lambda msg, e=email: self.status_update.emit(e, msg),
                 )
                 if not asset_ok:
-                    task.status = "failed"
-                    task.error_message = "Asset not ready after upload"
-                    self.step_progress.emit(email, idx, -1)
-                    self.task_completed.emit(email, task)
-                    return
+                    raise RuntimeError("Asset not ready after upload")
 
                 # Step 1c: Update user settings
                 self.step_progress.emit(email, idx, 16)
@@ -424,11 +457,7 @@ class APIAccountWorker(QThread):
                     on_status=lambda msg, e=email: self.status_update.emit(e, msg),
                 )
                 if not parent_id:
-                    task.status = "failed"
-                    task.error_message = "Create media post failed"
-                    self.step_progress.emit(email, idx, -1)
-                    self.task_completed.emit(email, task)
-                    return
+                    raise RuntimeError("Create media post failed")
 
                 time.sleep(0.5)
 
@@ -457,11 +486,7 @@ class APIAccountWorker(QThread):
                     on_status=lambda msg, e=email: self.status_update.emit(e, msg),
                 )
                 if not parent_id:
-                    task.status = "failed"
-                    task.error_message = "Create media post failed"
-                    self.step_progress.emit(email, idx, -1)
-                    self.task_completed.emit(email, task)
-                    return
+                    raise RuntimeError("Create media post failed")
 
                 time.sleep(1)
 
@@ -480,11 +505,7 @@ class APIAccountWorker(QThread):
 
             # === Common: check postId ===
             if not post_id:
-                task.status = "failed"
-                task.error_message = "Conversations new failed — không tìm thấy postId"
-                self.step_progress.emit(email, idx, -1)
-                self.task_completed.emit(email, task)
-                return
+                raise RuntimeError("Conversations new failed — không tìm thấy postId")
 
             # === Step 3: Create share link (retry — đợi video render xong) ===
             self.step_progress.emit(email, idx, 70)
@@ -529,7 +550,7 @@ class APIAccountWorker(QThread):
             task.status = "failed"
             task.error_message = str(e)
             self.step_progress.emit(email, idx, -1)
-            self.task_completed.emit(email, task)
+            # Không emit task_completed ở đây — retry wrapper sẽ xử lý
             raise
         finally:
             api.close()
@@ -1060,6 +1081,7 @@ class VideoGenTab(QWidget):
         self.queue_table.setColumnWidth(2, 50)
         self.queue_table.setColumnWidth(3, 120)
         self.queue_table.setIconSize(QSize(40, 40))
+        self.queue_table.verticalHeader().setDefaultSectionSize(44)  # Đủ chỗ cho thumbnail 40x40
         queue_l.addWidget(self.queue_table)
         self.tabs.addTab(queue_w, "📋 Hàng đợi")
         
@@ -2223,8 +2245,20 @@ class VideoGenTab(QWidget):
                     """)
                 self.completed_prompts.append(task)
                 
-                # Thêm nút ▶️ preview nếu video đã download
-                if task.output_path and os.path.exists(task.output_path):
+                # Thêm preview cho cột Xem: ảnh thumbnail (i2v) hoặc nút ▶️ (t2v)
+                if task.image_path and os.path.exists(task.image_path):
+                    # Image→Video: hiển thị thumbnail ảnh nguồn
+                    thumb_label = QLabel()
+                    thumb_label.setFixedSize(40, 40)
+                    thumb_label.setAlignment(Qt.AlignCenter)
+                    thumb_label.setToolTip(os.path.basename(task.image_path))
+                    thumb_label.setStyleSheet("border: 1px solid rgba(100,150,255,80); border-radius: 4px;")
+                    pix = QPixmap(task.image_path)
+                    if not pix.isNull():
+                        pix = pix.scaled(38, 38, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        thumb_label.setPixmap(pix)
+                    self.queue_table.setCellWidget(idx, 2, thumb_label)
+                elif task.output_path and os.path.exists(task.output_path):
                     preview_btn = QPushButton("▶️")
                     preview_btn.setFixedSize(36, 24)
                     preview_btn.setCursor(Qt.PointingHandCursor)

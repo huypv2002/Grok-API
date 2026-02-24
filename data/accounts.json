@@ -1,1 +1,13 @@
-[]
+{
+  "accounts": [
+    {
+      "email": "5",
+      "password_encrypted": "gAAAAABpndsC4QRgna-WgNBe9x7Kf56jQrX7GTBNK0M2PohEgATlK4prvTah-Tw60dHc-BhewwhXq1XsX9wH5KVetaBEt9Z31g==",
+      "fingerprint_id": "4b55c115-dc79-499b-8f94-07c2c235ae4b",
+      "status": "logged_out",
+      "cookies": null,
+      "last_login": null,
+      "error_message": null
+    }
+  ]
+}
