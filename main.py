@@ -72,17 +72,27 @@ def main():
     app_dir = get_app_dir()
     os.chdir(app_dir)
 
-    # 2. Tạo thư mục cần thiết
-    from src.core.paths import ensure_dirs
-    ensure_dirs()
+    # 2. Tạo thư mục cần thiết — nếu fail thì hiện lỗi rõ ràng
+    from src.core.paths import ensure_dirs, data_path
+    from src.core.paths import get_app_dir as get_resolved_app_dir
+    try:
+        ensure_dirs()
+    except RuntimeError as e:
+        write_crash_log(f"ensure_dirs() failed:\n{e}")
+        show_error_box("Lỗi khởi tạo dữ liệu", str(e))
+        sys.exit(1)
 
-    # 3. Log startup info (debug cho EXE)
+    # 3. Log startup info (debug cho EXE) — dùng absolute path
+    resolved_app_dir = get_resolved_app_dir()
     try:
         import platform
         import datetime
-        with open(os.path.join("data", "startup.log"), "w", encoding="utf-8") as f:
+        startup_log = str(data_path("startup.log"))
+        with open(startup_log, "w", encoding="utf-8") as f:
             f.write(f"[{datetime.datetime.now().isoformat()}] App starting\n")
-            f.write(f"  app_dir: {app_dir}\n")
+            f.write(f"  exe_dir (chdir): {app_dir}\n")
+            f.write(f"  resolved_app_dir: {resolved_app_dir}\n")
+            f.write(f"  using_fallback: {str(resolved_app_dir) != app_dir}\n")
             f.write(f"  cwd: {os.getcwd()}\n")
             f.write(f"  sys.executable: {sys.executable}\n")
             f.write(f"  frozen: {getattr(sys, 'frozen', False)}\n")
@@ -93,10 +103,12 @@ def main():
                 f.write(f"  __nuitka_binary_dir: {nbd}\n")
             except NameError:
                 f.write(f"  __nuitka_binary_dir: N/A (dev mode)\n")
-            # Log data dir contents
-            f.write(f"  data/ exists: {os.path.isdir('data')}\n")
-            f.write(f"  data/accounts.json exists: {os.path.isfile('data/accounts.json')}\n")
-            f.write(f"  data/.key exists: {os.path.isfile('data/.key')}\n")
+            # Log data dir contents — dùng absolute path
+            data_dir = str(data_path())
+            f.write(f"  data_dir (abs): {data_dir}\n")
+            f.write(f"  data/ exists: {os.path.isdir(data_dir)}\n")
+            f.write(f"  data/accounts.json exists: {os.path.isfile(str(data_path('accounts.json')))}\n")
+            f.write(f"  data/.key exists: {os.path.isfile(str(data_path('.key')))}\n")
     except Exception:
         pass
 

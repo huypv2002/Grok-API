@@ -61,22 +61,19 @@ def _get_hardware_uuid() -> str:
 
 def _get_or_create_machine_id() -> str:
     """Fallback cuối: tạo 1 lần và lưu vào file."""
-    import os
-    mid_file = os.path.join("data", ".machine_id")
-    os.makedirs("data", exist_ok=True)
+    mid_file = data_path(".machine_id")
+    mid_file.parent.mkdir(parents=True, exist_ok=True)
     try:
-        if os.path.exists(mid_file):
-            with open(mid_file, 'r') as f:
-                mid = f.read().strip()
-                if mid and len(mid) == 32:
-                    return mid
+        if mid_file.exists():
+            mid = mid_file.read_text().strip()
+            if mid and len(mid) == 32:
+                return mid
     except Exception:
         pass
     raw = f"{platform.machine()}|{platform.processor()}|{uuid.getnode()}"
     mid = hashlib.sha256(raw.encode()).hexdigest()[:32]
     try:
-        with open(mid_file, 'w') as f:
-            f.write(mid)
+        mid_file.write_text(mid)
     except Exception:
         pass
     return mid
