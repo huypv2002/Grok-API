@@ -52,6 +52,17 @@ def output_path(*parts: str) -> Path:
 
 
 def ensure_dirs():
-    """Tạo các thư mục cần thiết — gọi 1 lần khi app khởi động."""
+    """Tạo các thư mục và file JSON mặc định — gọi 1 lần khi app khởi động."""
     for d in [data_path(), data_path("profiles"), output_path()]:
         d.mkdir(parents=True, exist_ok=True)
+
+    # Tạo các file JSON mặc định nếu chưa tồn tại
+    _defaults = {
+        data_path("accounts.json"): "[]",
+        data_path("login_temp.json"): "{}",
+        data_path("settings.json"): "{}",
+        data_path("cf_clearance_cache.json"): "{}",
+    }
+    for fpath, content in _defaults.items():
+        if not fpath.exists():
+            fpath.write_text(content, encoding="utf-8")

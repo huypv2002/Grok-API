@@ -16,6 +16,7 @@ from ..core.account_manager import AccountManager
 from ..core.session_manager import SessionManager
 from ..core.history_manager import HistoryManager
 from ..core.d1_manager import D1Manager
+from ..core.paths import data_path
 
 
 class Particle3D:
@@ -191,6 +192,7 @@ class AnimatedBg(QWidget):
         painter.restore()
 
 
+LOGIN_TEMP_FILE = data_path("login_temp.json")
 CHECK_API_URL = "https://grok-auth-api.kh431248.workers.dev/check"
 
 
@@ -203,42 +205,25 @@ class SubscriptionChecker(QThread):
         self.username = username
 
     def run(self):
-        try:
-            import httpx
-            from .login_dialog import get_machine_id
-        except ImportError as e:
-            # Import lỗi trong EXE → log và báo lỗi, KHÔNG cho pass
-            try:
-                import logging
-                logging.error(f"[SubscriptionChecker] Import error: {e}")
-            except Exception:
-                pass
-            self.result.emit(False, "", f"Lỗi hệ thống: {e}")
-            return
-
+        import httpx
+        from .login_dialog import get_machine_id
         try:
             mid = get_machine_id()
+            print(f"[SubCheck] Checking subscription for user={self.username}, mid={mid[:16]}...")
             r = httpx.post(CHECK_API_URL, json={
                 "username": self.username,
                 "machine_id": mid
             }, timeout=10)
             data = r.json()
+            print(f"[SubCheck] Response: ok={data.get('ok')}, plan={data.get('plan','')}, error={data.get('error','')}")
             if data.get("ok"):
                 self.result.emit(True, data.get("plan", ""), data.get("expires_at", ""))
             else:
                 error = data.get("error", "Gói đã hết hạn")
                 self.result.emit(False, "", error)
-        except (httpx.ConnectError, httpx.TimeoutException, OSError):
-            # Lỗi mạng → không block user
-            self.result.emit(True, "", "")
         except Exception as e:
-            # Lỗi khác (parse JSON, v.v.) → log nhưng không block
-            try:
-                import logging
-                logging.error(f"[SubscriptionChecker] Unexpected error: {e}")
-            except Exception:
-                pass
-            self.result.emit(True, "", "")
+            print(f"[SubCheck] Error: {e}")
+            self.result.emit(True, "", "")  # Lỗi mạng → không block user
 
 
 class MainWindow(QMainWindow):
@@ -251,11 +236,9 @@ class MainWindow(QMainWindow):
         self._sub_checker = None
 
         # Load username từ login_temp
-        from ..core.paths import data_path
-        _temp = data_path("login_temp.json")
-        if _temp.exists():
+        if LOGIN_TEMP_FILE.exists():
             try:
-                data = json.loads(_temp.read_text(encoding="utf-8"))
+                data = json.loads(LOGIN_TEMP_FILE.read_text())
                 self._logged_in_user = data.get("username", "")
             except Exception:
                 pass
@@ -273,11 +256,20 @@ class MainWindow(QMainWindow):
         self._sub_timer = QTimer()
         self._sub_timer.timeout.connect(self._check_subscription)
         self._sub_timer.start(5 * 60 * 1000)  # 5 phút
-        # Check ngay lần đầu sau 500ms (đủ để UI render)
-        QTimer.singleShot(500, self._check_subscription)
+        # Check ngay lần đầu sau 3 giây
+        QTimer.singleShot(3000, self._check_subscription)
 
     def _check_subscription(self):
+        # Nếu chưa có username → thử đọc lại từ login_temp.json
         if not self._logged_in_user:
+            if LOGIN_TEMP_FILE.exists():
+                try:
+                    data = json.loads(LOGIN_TEMP_FILE.read_text(encoding="utf-8"))
+                    self._logged_in_user = data.get("username", "")
+                except Exception:
+                    pass
+        if not self._logged_in_user:
+            print("[SubCheck] Skipped: no logged_in_user")
             return
         # Tránh tạo nhiều checker cùng lúc
         if self._sub_checker and self._sub_checker.isRunning():
@@ -302,10 +294,8 @@ class MainWindow(QMainWindow):
             msg.setStandardButtons(QMessageBox.Ok)
             msg.exec()
             # Xóa login temp và thoát
-            from ..core.paths import data_path
-            _temp = data_path("login_temp.json")
-            if _temp.exists():
-                _temp.unlink()
+            if LOGIN_TEMP_FILE.exists():
+                LOGIN_TEMP_FILE.unlink()
             import os
             os._exit(0)
     

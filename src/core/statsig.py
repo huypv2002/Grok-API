@@ -30,13 +30,16 @@ try:
 except ImportError:
     CURL_AVAILABLE = False
 
+import platform as _platform
+_CURRENT_OS = _platform.system()
+
 from .cf_solver import get_chrome_user_agent, CF_SOLVER_AVAILABLE
 
 USER_AGENT = (
     get_chrome_user_agent() if CF_SOLVER_AVAILABLE
     else (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-        if _platform.system() == "Windows"
+        if _CURRENT_OS == "Windows"
         else "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
     )
 )
@@ -47,8 +50,6 @@ EPOCH_OFFSET = 1682924400
 # Dynamic fingerprint string — match UA + OS hiện tại
 # Grok JS thu thập browser fingerprint (canvas, webgl, fonts, etc.)
 # Format: "{UA}|{platform}|false|0|{hardwareConcurrency}|{language}"
-import platform as _platform
-_CURRENT_OS = _platform.system()
 
 def _build_fingerprint() -> str:
     """Build fingerprint string matching current OS + UA."""
