@@ -89,7 +89,7 @@ jobs:
           python -m nuitka `
             --standalone `
             --onefile `
-            --windows-console-mode=attach `
+            --windows-console-mode=force `
             --output-filename=GrokVideoGenerator.exe `
             --enable-plugin=pyside6 `
             --jobs=$cpu `
@@ -162,6 +162,57 @@ jobs:
             Get-ChildItem -Recurse -Filter "GrokVideoGenerator.exe" | ForEach-Object { echo $_.FullName }
             exit 1
           }
+
+      - name: Smoke test - check exe starts
+        run: |
+          echo "=== Smoke test: run exe with timeout ==="
+          $proc = Start-Process -FilePath ".\GrokVideoGenerator.exe" -PassThru -NoNewWindow
+          echo "PID: $($proc.Id)"
+          Start-Sleep -Seconds 10
+          
+          # Check if process is still running (good) or crashed immediately (bad)
+          if ($proc.HasExited) {
+            echo "WARN: Process exited with code $($proc.ExitCode)"
+            # Check for crash log
+            if (Test-Path "crash.log") {
+              echo "=== crash.log ==="
+              Get-Content "crash.log"
+            }
+            if (Test-Path "debug_startup.log") {
+              echo "=== debug_startup.log ==="
+              Get-Content "debug_startup.log"
+            }
+            # Check LOCALAPPDATA fallback
+            $fallback = "$env:LOCALAPPDATA\GrokVideoGenerator"
+            if (Test-Path $fallback) {
+              echo "=== Fallback dir found: $fallback ==="
+              Get-ChildItem -Recurse $fallback | ForEach-Object { echo $_.FullName }
+            }
+            # Check Desktop
+            $desktop = [Environment]::GetFolderPath("Desktop")
+            if (Test-Path "$desktop\grok_debug.log") {
+              echo "=== Desktop grok_debug.log ==="
+              Get-Content "$desktop\grok_debug.log"
+            }
+          } else {
+            echo "OK: Process is running (PID $($proc.Id))"
+            # Check created files
+            if (Test-Path "data") {
+              echo "=== data/ folder found cạnh exe ==="
+              Get-ChildItem "data" | ForEach-Object { echo "  $($_.Name)" }
+            }
+            if (Test-Path "debug_startup.log") {
+              echo "=== debug_startup.log ==="
+              Get-Content "debug_startup.log"
+            }
+            $fallback = "$env:LOCALAPPDATA\GrokVideoGenerator"
+            if (Test-Path $fallback) {
+              echo "=== Fallback dir: $fallback ==="
+              Get-ChildItem -Recurse $fallback | ForEach-Object { echo $_.FullName }
+            }
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+          echo "=== Smoke test done ==="
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
