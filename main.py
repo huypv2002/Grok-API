@@ -19,24 +19,13 @@ except ModuleNotFoundError:
 
 
 def get_app_dir():
-    """Lấy thư mục chứa exe (hoặc main.py khi dev).
+    """Lấy thư mục chứa exe thật.
     
-    Nuitka onefile: __nuitka_binary_dir = thư mục chứa file .exe thực tế
-    Nuitka standalone: sys.executable = đường dẫn exe
-    PyInstaller: sys.executable = đường dẫn exe
+    Nuitka onefile: sys.executable = đường dẫn .exe GỐC (không phải temp)
     Dev: __file__ = đường dẫn main.py
     """
-    # Nuitka onefile inject __nuitka_binary_dir ở module level
-    # Đây là thư mục chứa .exe thật, KHÔNG phải temp extraction dir
-    try:
-        # noinspection PyUnresolvedReferences
-        return __nuitka_binary_dir  # type: ignore[name-defined]
-    except NameError:
-        pass
-    # Nuitka standalone hoặc PyInstaller
     if getattr(sys, 'frozen', False):
         return os.path.dirname(os.path.abspath(sys.executable))
-    # Dev mode
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -68,8 +57,40 @@ def show_error_box(title, msg):
 
 
 def main():
-    # 1. Chuyển CWD về thư mục chứa exe
+    # 0. Debug ngay lập tức — ghi file cạnh exe bằng pure os
     app_dir = get_app_dir()
+    
+    # Ghi debug log TRƯỚC mọi thứ khác
+    try:
+        import datetime
+        debug_path = os.path.join(app_dir, "debug_startup.log")
+        with open(debug_path, "w", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().isoformat()}] === STARTUP DEBUG ===\n")
+            f.write(f"  app_dir (from get_app_dir): {app_dir}\n")
+            f.write(f"  sys.executable: {sys.executable}\n")
+            f.write(f"  sys.frozen: {getattr(sys, 'frozen', False)}\n")
+            f.write(f"  os.getcwd(): {os.getcwd()}\n")
+            f.write(f"  sys.argv: {sys.argv}\n")
+            f.write(f"  sys.platform: {sys.platform}\n")
+            try:
+                f.write(f"  __nuitka_binary_dir: {__nuitka_binary_dir}\n")  # type: ignore
+            except NameError:
+                f.write(f"  __nuitka_binary_dir: NOT DEFINED\n")
+            f.write(f"  LOCALAPPDATA: {os.environ.get('LOCALAPPDATA', 'N/A')}\n")
+            f.write(f"  APPDATA: {os.environ.get('APPDATA', 'N/A')}\n")
+    except Exception as e:
+        # Nếu không ghi được cạnh exe → thử ghi vào Desktop
+        try:
+            desktop = os.path.join(os.path.expanduser("~"), "Desktop", "grok_debug.log")
+            with open(desktop, "w", encoding="utf-8") as f:
+                f.write(f"CANNOT WRITE TO APP DIR: {app_dir}\n")
+                f.write(f"Error: {e}\n")
+                f.write(f"sys.executable: {sys.executable}\n")
+                f.write(f"sys.frozen: {getattr(sys, 'frozen', False)}\n")
+        except Exception:
+            pass
+
+    # 1. Chuyển CWD về thư mục chứa exe
     os.chdir(app_dir)
 
     # 2. Tạo thư mục cần thiết — nếu fail thì hiện lỗi rõ ràng
@@ -82,33 +103,21 @@ def main():
         show_error_box("Lỗi khởi tạo dữ liệu", str(e))
         sys.exit(1)
 
-    # 3. Log startup info (debug cho EXE) — dùng absolute path
+    # 3. Log startup info
     resolved_app_dir = get_resolved_app_dir()
     try:
         import platform
-        import datetime
         startup_log = str(data_path("startup.log"))
         with open(startup_log, "w", encoding="utf-8") as f:
-            f.write(f"[{datetime.datetime.now().isoformat()}] App starting\n")
-            f.write(f"  exe_dir (chdir): {app_dir}\n")
+            f.write(f"[{datetime.datetime.now().isoformat()}] App started OK\n")
+            f.write(f"  exe_dir: {app_dir}\n")
             f.write(f"  resolved_app_dir: {resolved_app_dir}\n")
             f.write(f"  using_fallback: {str(resolved_app_dir) != app_dir}\n")
-            f.write(f"  cwd: {os.getcwd()}\n")
-            f.write(f"  sys.executable: {sys.executable}\n")
-            f.write(f"  frozen: {getattr(sys, 'frozen', False)}\n")
-            f.write(f"  platform: {platform.system()} {platform.release()} {platform.machine()}\n")
+            f.write(f"  data_dir: {data_path()}\n")
+            f.write(f"  output_dir: {str(data_path()).replace('data', 'output')}\n")
+            f.write(f"  platform: {platform.system()} {platform.release()}\n")
             f.write(f"  python: {sys.version}\n")
-            try:
-                nbd = __nuitka_binary_dir  # type: ignore[name-defined]
-                f.write(f"  __nuitka_binary_dir: {nbd}\n")
-            except NameError:
-                f.write(f"  __nuitka_binary_dir: N/A (dev mode)\n")
-            # Log data dir contents — dùng absolute path
-            data_dir = str(data_path())
-            f.write(f"  data_dir (abs): {data_dir}\n")
-            f.write(f"  data/ exists: {os.path.isdir(data_dir)}\n")
-            f.write(f"  data/accounts.json exists: {os.path.isfile(str(data_path('accounts.json')))}\n")
-            f.write(f"  data/.key exists: {os.path.isfile(str(data_path('.key')))}\n")
+            f.write(f"  accounts.json exists: {data_path('accounts.json').exists()}\n")
     except Exception:
         pass
 
