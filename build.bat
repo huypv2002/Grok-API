@@ -75,7 +75,7 @@ echo.
 python -m nuitka ^
     --standalone ^
     --onefile ^
-    --windows-console-mode=attach ^
+    --windows-console-mode=force ^
     --output-filename=GrokVideoGenerator.exe ^
     --enable-plugin=pyside6 ^
     --jobs=%CPU_COUNT% ^

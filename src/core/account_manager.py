@@ -75,7 +75,9 @@ class AccountManager:
             return
         try:
             data = json.loads(acc_file.read_text())
-            for acc_data in data.get("accounts", []):
+            # Handle cả format cũ (list) và mới (dict)
+            acc_list = data.get("accounts", []) if isinstance(data, dict) else []
+            for acc_data in acc_list:
                 account = Account(
                     email=acc_data["email"],
                     password=acc_data["password_encrypted"],
