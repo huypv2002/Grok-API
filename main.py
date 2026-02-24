@@ -10,7 +10,11 @@ try:
     # noinspection PyUnresolvedReferences
     _NUITKA_BINARY_DIR = __nuitka_binary_dir  # type: ignore[name-defined]
 except NameError:
-    pass
+    # Fallback: thử lấy từ sys.executable (Nuitka onefile: exe thật, không phải temp)
+    import pathlib as _pathlib
+    _exe = _pathlib.Path(sys.executable).resolve()
+    if _exe.suffix.lower() == '.exe' and _exe.exists():
+        _NUITKA_BINARY_DIR = _exe.parent
 
 # === Python 3.13 compat: distutils bị xóa khỏi stdlib ===
 try:
@@ -80,17 +84,28 @@ def main():
         with open(debug_path, "w", encoding="utf-8") as f:
             f.write(f"[{datetime.datetime.now().isoformat()}] === STARTUP DEBUG ===\n")
             f.write(f"  app_dir (from get_app_dir): {app_dir}\n")
+            f.write(f"  _NUITKA_BINARY_DIR (module): {_NUITKA_BINARY_DIR}\n")
             f.write(f"  sys.executable: {sys.executable}\n")
             f.write(f"  sys.frozen: {getattr(sys, 'frozen', False)}\n")
             f.write(f"  os.getcwd(): {os.getcwd()}\n")
             f.write(f"  sys.argv: {sys.argv}\n")
             f.write(f"  sys.platform: {sys.platform}\n")
             try:
-                f.write(f"  __nuitka_binary_dir: {__nuitka_binary_dir}\n")  # type: ignore
+                f.write(f"  __nuitka_binary_dir (raw): {__nuitka_binary_dir}\n")  # type: ignore
             except NameError:
-                f.write(f"  __nuitka_binary_dir: NOT DEFINED\n")
+                f.write(f"  __nuitka_binary_dir (raw): NOT DEFINED\n")
             f.write(f"  LOCALAPPDATA: {os.environ.get('LOCALAPPDATA', 'N/A')}\n")
             f.write(f"  APPDATA: {os.environ.get('APPDATA', 'N/A')}\n")
+            # Test ghi file cạnh exe
+            test_file = os.path.join(app_dir, "data", ".write_test")
+            try:
+                os.makedirs(os.path.join(app_dir, "data"), exist_ok=True)
+                with open(test_file, "w") as tf:
+                    tf.write("ok")
+                os.unlink(test_file)
+                f.write(f"  write_test: OK (can write to {app_dir})\n")
+            except Exception as we:
+                f.write(f"  write_test: FAIL - {we}\n")
     except Exception as e:
         # Nếu không ghi được cạnh exe → thử ghi vào Desktop
         try:
@@ -107,8 +122,10 @@ def main():
     os.chdir(app_dir)
 
     # 2. Tạo thư mục cần thiết — nếu fail thì hiện lỗi rõ ràng
-    from src.core.paths import ensure_dirs, data_path
+    from src.core.paths import ensure_dirs, data_path, reset_app_dir, get_debug_info
     from src.core.paths import get_app_dir as get_resolved_app_dir
+    # Reset để paths.py re-read _NUITKA_BINARY_DIR từ __main__ (đã set ở module level)
+    reset_app_dir()
     try:
         ensure_dirs()
     except RuntimeError as e:
@@ -127,10 +144,10 @@ def main():
             f.write(f"  resolved_app_dir: {resolved_app_dir}\n")
             f.write(f"  using_fallback: {str(resolved_app_dir) != app_dir}\n")
             f.write(f"  data_dir: {data_path()}\n")
-            f.write(f"  output_dir: {str(data_path()).replace('data', 'output')}\n")
             f.write(f"  platform: {platform.system()} {platform.release()}\n")
             f.write(f"  python: {sys.version}\n")
             f.write(f"  accounts.json exists: {data_path('accounts.json').exists()}\n")
+            f.write(f"\n--- paths debug ---\n{get_debug_info()}\n")
     except Exception:
         pass
 

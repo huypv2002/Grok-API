@@ -15,8 +15,13 @@ from PySide6.QtGui import QFont, QPainter, QLinearGradient, QRadialGradient, QCo
 
 from ..core.paths import data_path
 
-LOGIN_TEMP_FILE = data_path("login_temp.json")
+# Lazy: không gọi data_path() ở module level vì paths chưa được resolve lúc import
 AUTH_API_URL = "https://grok-auth-api.kh431248.workers.dev/login"
+
+
+def _login_temp_file():
+    """Lazy getter để tránh gọi data_path() trước khi paths được init."""
+    return data_path("login_temp.json")
 
 
 def get_machine_id() -> str:
@@ -360,9 +365,10 @@ class AppLoginDialog(QDialog):
 
     def _load_temp(self):
         """Load tk/mk từ login_temp.json nếu có → tự fill."""
-        if LOGIN_TEMP_FILE.exists():
+        login_temp = _login_temp_file()
+        if login_temp.exists():
             try:
-                data = json.loads(LOGIN_TEMP_FILE.read_text())
+                data = json.loads(login_temp.read_text())
                 self.username_input.setText(data.get("username", ""))
                 self.password_input.setText(data.get("password", ""))
             except Exception:
@@ -370,8 +376,9 @@ class AppLoginDialog(QDialog):
 
     def _save_temp(self, username, password, plan="", expires_at=""):
         """Lưu tk/mk + plan/expires_at vào login_temp.json."""
-        LOGIN_TEMP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        LOGIN_TEMP_FILE.write_text(json.dumps({
+        login_temp = _login_temp_file()
+        login_temp.parent.mkdir(parents=True, exist_ok=True)
+        login_temp.write_text(json.dumps({
             "username": username,
             "password": password,
             "plan": plan,

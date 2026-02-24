@@ -1,19 +1,17 @@
 """Centralized path resolution cho Nuitka onefile trên Windows.
 
-Strategy: tìm thư mục chứa .exe thật bằng mọi cách có thể,
-KHÔNG dùng _can_write_dir để chọn path (vì temp dir cũng writable).
-Chỉ fallback sang LOCALAPPDATA khi tạo thư mục thực sự thất bại.
+Strategy: tìm thư mục chứa .exe thật bằng mọi cách có thể.
+Nuitka onefile: __nuitka_binary_dir được capture trong main.py và truyền qua _NUITKA_BINARY_DIR.
 """
 import os
 import sys
 from pathlib import Path
 
-# === Capture __nuitka_binary_dir NGAY ĐÂY ở module level ===
-# Nuitka onefile inject biến này vào __main__ globals.
+# === Capture __nuitka_binary_dir từ __main__ (đã được set trong main.py) ===
 _NUITKA_BINARY_DIR: Path | None = None
 try:
     import __main__ as _main_mod
-    _nbd = getattr(_main_mod, '_NUITKA_BINARY_DIR', None)  # captured trong main.py
+    _nbd = getattr(_main_mod, '_NUITKA_BINARY_DIR', None)
     if _nbd:
         _NUITKA_BINARY_DIR = Path(str(_nbd))
 except Exception:
@@ -27,24 +25,42 @@ def _get_exe_dir() -> Path:
     """Lấy thư mục chứa .exe thật - thử tất cả cách có thể."""
 
     # Cách 1: __nuitka_binary_dir (Nuitka onefile - chính xác nhất)
-    if _NUITKA_BINARY_DIR:
+    if _NUITKA_BINARY_DIR and _NUITKA_BINARY_DIR.exists():
         return _NUITKA_BINARY_DIR
 
-    # Cách 2: sys.argv[0] - path exe được gọi (Windows double-click)
-    # Trên Nuitka onefile: sys.argv[0] = path tới .exe gốc
+    # Cách 2: Re-read từ __main__ (phòng trường hợp paths.py import trước main.py set xong)
+    try:
+        import __main__ as _m
+        nbd = getattr(_m, '_NUITKA_BINARY_DIR', None)
+        if nbd:
+            p = Path(str(nbd))
+            if p.exists():
+                return p
+    except Exception:
+        pass
+
+    # Cách 3: sys.executable - trên Nuitka onefile Windows, đây là path tới .exe gốc
+    # (khác với sys.argv[0] có thể là temp path)
+    exe = Path(sys.executable).resolve()
+    # Nuitka onefile: sys.executable = path tới .exe thật (không phải temp)
+    # Nuitka standalone / PyInstaller: sys.executable cũng là exe thật
+    if exe.suffix.lower() == '.exe' and exe.exists():
+        return exe.parent
+
+    # Cách 4: sys.argv[0]
     if sys.argv and sys.argv[0]:
         p = Path(sys.argv[0]).resolve()
-        if p.suffix.lower() in ('.exe', '') and p.exists():
+        if p.suffix.lower() == '.exe' and p.exists():
             return p.parent
 
-    # Cách 3: sys.executable (frozen mode)
+    # Cách 5: frozen flag
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).resolve().parent
 
     # Dev mode: __file__ của main.py
     try:
-        import __main__ as _m
-        f = getattr(_m, '__file__', None)
+        import __main__ as _m2
+        f = getattr(_m2, '__file__', None)
         if f:
             return Path(f).resolve().parent
     except Exception:
@@ -77,7 +93,12 @@ def get_app_dir() -> Path:
 
     # Thử tạo data/ cạnh exe
     try:
-        (exe_dir / "data").mkdir(parents=True, exist_ok=True)
+        test_dir = exe_dir / "data"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        # Verify có thể ghi file thật
+        test_file = test_dir / ".write_test"
+        test_file.write_text("ok")
+        test_file.unlink()
         _app_dir = exe_dir
         return _app_dir
     except OSError:
@@ -97,6 +118,20 @@ def get_app_dir() -> Path:
     last.mkdir(parents=True, exist_ok=True)
     _app_dir = last
     return _app_dir
+
+
+def reset_app_dir():
+    """Reset cached app_dir - dùng khi cần re-detect sau khi main.py set _NUITKA_BINARY_DIR."""
+    global _app_dir, _NUITKA_BINARY_DIR
+    _app_dir = None
+    # Re-read từ __main__
+    try:
+        import __main__ as _m
+        nbd = getattr(_m, '_NUITKA_BINARY_DIR', None)
+        if nbd:
+            _NUITKA_BINARY_DIR = Path(str(nbd))
+    except Exception:
+        pass
 
 
 def data_path(*parts: str) -> Path:
@@ -135,3 +170,24 @@ def ensure_dirs():
                 fpath.write_text(content, encoding="utf-8")
         except OSError as e:
             raise RuntimeError(f"Không thể tạo file: {fpath}\nLỗi: {e}")
+
+
+def get_debug_info() -> str:
+    """Trả về debug info về path resolution - dùng để log."""
+    lines = [
+        f"_NUITKA_BINARY_DIR (module): {_NUITKA_BINARY_DIR}",
+        f"_app_dir (cached): {_app_dir}",
+        f"sys.executable: {sys.executable}",
+        f"sys.argv[0]: {sys.argv[0] if sys.argv else 'N/A'}",
+        f"sys.frozen: {getattr(sys, 'frozen', False)}",
+        f"os.getcwd(): {os.getcwd()}",
+        f"get_app_dir(): {get_app_dir()}",
+        f"data_path(): {data_path()}",
+        f"output_path(): {output_path()}",
+    ]
+    try:
+        import __main__ as _m
+        lines.append(f"__main__._NUITKA_BINARY_DIR: {getattr(_m, '_NUITKA_BINARY_DIR', 'NOT SET')}")
+    except Exception:
+        pass
+    return "\n".join(lines)
