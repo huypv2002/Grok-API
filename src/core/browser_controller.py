@@ -172,10 +172,14 @@ class BrowserController:
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         profile_path = str(self.profile_dir)
 
+        # Fixed UA — phải match với API calls (cf_clearance bound to UA)
+        from .cf_solver import get_chrome_user_agent
+        fixed_ua = get_chrome_user_agent()
+
         # Detect Chrome version — cross-platform
         chrome_version = detect_chrome_version()
         logger.info(f"[BROWSER] Profile: {self.fingerprint_id}, Chrome: {chrome_version}, Headless: {headless}")
-        logger.info(f"[BROWSER] Fixed UA: {get_chrome_user_agent()[:60]}...")
+        logger.info(f"[BROWSER] Fixed UA: {fixed_ua[:60]}...")
 
         max_retries = 3
         last_error = None
@@ -183,10 +187,6 @@ class BrowserController:
         for attempt in range(max_retries):
             try:
                 logger.info(f"[BROWSER] Creating driver (attempt {attempt + 1}/{max_retries})...")
-
-                # Force fixed UA to match API calls (cf_clearance is bound to UA)
-                from .cf_solver import get_chrome_user_agent
-                fixed_ua = get_chrome_user_agent()
 
                 options = uc.ChromeOptions()
                 options.add_argument(f"--user-agent={fixed_ua}")
