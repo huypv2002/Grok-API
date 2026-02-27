@@ -1,10 +1,12 @@
 """Main Window - Modern UI with 3D Animated Background"""
+import os
 import json
 import math
 from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
-    QStatusBar, QLabel, QPushButton, QStackedWidget, QMessageBox
+    QStatusBar, QLabel, QPushButton, QStackedWidget, QMessageBox,
+    QDialog, QProgressBar, QTextEdit
 )
 from PySide6.QtCore import Qt, QTimer, QPointF, Property, QPropertyAnimation, QThread, Signal
 from PySide6.QtGui import QFont, QPainter, QLinearGradient, QRadialGradient, QColor, QPen
@@ -17,6 +19,8 @@ from ..core.session_manager import SessionManager
 from ..core.history_manager import HistoryManager
 from ..core.d1_manager import D1Manager
 from ..core.paths import data_path
+from ..core.version import APP_VERSION
+from ..core.updater import UpdateChecker, UpdateDownloader, apply_update
 
 
 class Particle3D:
@@ -226,6 +230,127 @@ class SubscriptionChecker(QThread):
             self.result.emit(True, "", "")  # Lỗi mạng → không block user
 
 
+class UpdateDialog(QDialog):
+    """Popup thông báo có bản mới + nút Update."""
+    
+    def __init__(self, tag: str, notes: str, download_url: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Cập nhật mới")
+        self.setFixedSize(480, 360)
+        self.download_url = download_url
+        self._downloader = None
+        self._new_app_dir = None
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        
+        # Header
+        title = QLabel(f"🎉 Có bản mới: {tag}")
+        title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        
+        current = QLabel(f"Phiên bản hiện tại: v{APP_VERSION}")
+        current.setAlignment(Qt.AlignCenter)
+        current.setStyleSheet("color: #888;")
+        layout.addWidget(current)
+        
+        # Release notes
+        if notes:
+            notes_box = QTextEdit()
+            notes_box.setReadOnly(True)
+            notes_box.setPlainText(notes)
+            notes_box.setMaximumHeight(120)
+            notes_box.setStyleSheet("background: rgba(40,50,70,180); border: 1px solid rgba(100,150,255,50); border-radius: 6px; color: white; padding: 6px;")
+            layout.addWidget(notes_box)
+        
+        # Progress bar (ẩn ban đầu)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFixedHeight(24)
+        self.progress.setFormat("Chờ tải...")
+        self.progress.setVisible(False)
+        self.progress.setStyleSheet("""
+            QProgressBar { background: rgba(40,50,70,180); border: 1px solid rgba(52,152,219,100); border-radius: 6px; color: white; text-align: center; }
+            QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #3498db, stop:1 #2ecc71); border-radius: 5px; }
+        """)
+        layout.addWidget(self.progress)
+        
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        layout.addWidget(self.status_label)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.skip_btn = QPushButton("Bỏ qua")
+        self.skip_btn.setFixedSize(120, 36)
+        self.skip_btn.setCursor(Qt.PointingHandCursor)
+        self.skip_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.skip_btn)
+        
+        btn_layout.addStretch()
+        
+        self.update_btn = QPushButton("⬇️ Cập nhật ngay")
+        self.update_btn.setFixedSize(180, 36)
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self.update_btn.setStyleSheet("""
+            QPushButton { background: #3498db; color: white; border: none; border-radius: 6px; font-weight: bold; font-size: 13px; }
+            QPushButton:hover { background: #2980b9; }
+            QPushButton:disabled { background: #555; }
+        """)
+        self.update_btn.clicked.connect(self._start_download)
+        btn_layout.addWidget(self.update_btn)
+        
+        layout.addLayout(btn_layout)
+    
+    def _start_download(self):
+        self.update_btn.setEnabled(False)
+        self.skip_btn.setEnabled(False)
+        self.progress.setVisible(True)
+        self.status_label.setText("Đang tải bản mới...")
+        
+        self._downloader = UpdateDownloader(self.download_url)
+        self._downloader.progress.connect(self._on_progress)
+        self._downloader.finished.connect(self._on_download_done)
+        self._downloader.start()
+    
+    def _on_progress(self, pct):
+        self.progress.setValue(pct)
+        self.progress.setFormat(f"Đang tải... {pct}%")
+    
+    def _on_download_done(self, ok, result):
+        if ok:
+            self._new_app_dir = result
+            self.progress.setFormat("✅ Tải xong!")
+            self.status_label.setText("Đang áp dụng cập nhật... App sẽ khởi động lại.")
+            QTimer.singleShot(1000, self._apply)
+        else:
+            self.progress.setFormat("❌ Lỗi")
+            self.status_label.setText(f"Lỗi: {result}")
+            self.update_btn.setEnabled(True)
+            self.skip_btn.setEnabled(True)
+    
+    def _apply(self):
+        """Gọi apply_update → tạo batch script → thoát app."""
+        try:
+            apply_update(self._new_app_dir)
+            # Thoát app để batch script swap files
+            os._exit(0)
+        except Exception as e:
+            self.status_label.setText(f"Lỗi apply: {e}")
+            self.update_btn.setEnabled(True)
+            self.skip_btn.setEnabled(True)
+    
+    def closeEvent(self, event):
+        if self._downloader and self._downloader.isRunning():
+            self._downloader.stop()
+            self._downloader.wait(3000)
+        super().closeEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -258,6 +383,11 @@ class MainWindow(QMainWindow):
         self._sub_timer.start(5 * 60 * 1000)  # 5 phút
         # Check ngay lần đầu sau 3 giây
         QTimer.singleShot(3000, self._check_subscription)
+        
+        # Auto-update check sau 5 giây
+        self._update_checker = None
+        self._update_info = {}  # lưu tag, url, notes nếu có bản mới
+        QTimer.singleShot(5000, self._check_for_update)
 
     def _check_subscription(self):
         # Nếu chưa có username → thử đọc lại từ login_temp.json
@@ -325,7 +455,24 @@ class MainWindow(QMainWindow):
         self.title.setFont(QFont("Segoe UI", 20, QFont.Bold))
         header.addWidget(self.title)
         
+        # Version label
+        self.version_label = QLabel(f"v{APP_VERSION}")
+        self.version_label.setStyleSheet("color: #888; font-size: 11px; margin-left: 8px;")
+        header.addWidget(self.version_label)
+        
         header.addStretch()
+        
+        # Update button (ẩn ban đầu, hiện khi có bản mới)
+        self.update_btn = QPushButton("🔄 Cập nhật")
+        self.update_btn.setFixedSize(120, 36)
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self.update_btn.setVisible(False)
+        self.update_btn.setStyleSheet("""
+            QPushButton { background: #e67e22; color: white; border: none; border-radius: 6px; font-weight: bold; }
+            QPushButton:hover { background: #d35400; }
+        """)
+        self.update_btn.clicked.connect(self._show_update_dialog)
+        header.addWidget(self.update_btn)
         
         # Theme toggle
         self.theme_btn = QPushButton("🌙 Dark")
@@ -546,6 +693,44 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"🔄 Đang chạy {total} tác vụ...")
         else:
             self.status_label.setText("✅ Sẵn sàng")
+    
+    # === Auto-update methods ===
+    
+    def _check_for_update(self):
+        """Check GitHub Releases cho bản mới (background)."""
+        self._update_checker = UpdateChecker()
+        self._update_checker.result.connect(self._on_update_check_result)
+        self._update_checker.start()
+    
+    def _on_update_check_result(self, has_update, tag, dl_url, notes, error):
+        """Xử lý kết quả check update."""
+        if error:
+            print(f"[Update] Check failed: {error}")
+            return
+        if not has_update:
+            print(f"[Update] Đang dùng bản mới nhất (remote: {tag or 'N/A'})")
+            return
+        # Có bản mới → lưu info + hiện nút update
+        print(f"[Update] Có bản mới: {tag}")
+        self._update_info = {"tag": tag, "url": dl_url, "notes": notes}
+        self.update_btn.setText(f"🔄 {tag}")
+        self.update_btn.setVisible(True)
+        # Tự động popup thông báo
+        self._show_update_dialog()
+    
+    def _show_update_dialog(self):
+        """Hiện popup update."""
+        info = getattr(self, '_update_info', {})
+        if not info.get("url"):
+            QMessageBox.information(self, "Cập nhật", f"Đang dùng bản mới nhất v{APP_VERSION}")
+            return
+        dlg = UpdateDialog(
+            tag=info["tag"],
+            notes=info.get("notes", ""),
+            download_url=info["url"],
+            parent=self
+        )
+        dlg.exec()
     
     def closeEvent(self, event):
         if hasattr(self.video_gen_tab, '_stop_generation'):

@@ -330,8 +330,8 @@ class APIAccountWorker(QThread):
                             f"   ❌ [{i+1}/{total}] Failed sau {MAX_RETRIES} lần retry: {str(e)[:80]}"
                         )
                         from ..core.models import VideoTask
-                        prompt = item[0] if isinstance(item, tuple) else item
-                        image_path = item[1] if isinstance(item, tuple) and len(item) > 1 else None
+                        prompt = item[0] if isinstance(item, (tuple, list)) else item
+                        image_path = item[1] if isinstance(item, (tuple, list)) and len(item) > 1 else None
                         failed_task = VideoTask(
                             account_email=email,
                             prompt=prompt,
@@ -392,10 +392,10 @@ class APIAccountWorker(QThread):
         if self._stopped:
             return
 
-        prompt = item[0] if isinstance(item, tuple) else item
-        image_path = item[1] if isinstance(item, tuple) and len(item) > 1 else None
-        subfolder = item[2] if isinstance(item, tuple) and len(item) > 2 else None
-        stt = item[3] if isinstance(item, tuple) and len(item) > 3 else idx + 1
+        prompt = item[0] if isinstance(item, (tuple, list)) else item
+        image_path = item[1] if isinstance(item, (tuple, list)) and len(item) > 1 else None
+        subfolder = item[2] if isinstance(item, (tuple, list)) and len(item) > 2 else None
+        stt = item[3] if isinstance(item, (tuple, list)) and len(item) > 3 else idx + 1
 
         is_image_mode = bool(image_path)
 
@@ -1082,7 +1082,26 @@ class VideoGenTab(QWidget):
         self.queue_table.setColumnWidth(3, 120)
         self.queue_table.setIconSize(QSize(40, 40))
         self.queue_table.verticalHeader().setDefaultSectionSize(44)  # Đủ chỗ cho thumbnail 40x40
+        # Double-click cột Prompt để sửa
+        self.queue_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.queue_table.cellDoubleClicked.connect(self._on_queue_double_click)
+        # Enable nút Tạo Lại khi chọn row
+        self.queue_table.itemSelectionChanged.connect(
+            lambda: self.regen_btn.setEnabled(bool(self.queue_table.selectedItems()))
+        )
         queue_l.addWidget(self.queue_table)
+        
+        # Nút Tạo Lại
+        regen_row = QHBoxLayout()
+        self.regen_btn = QPushButton("🔄 Tạo Lại")
+        self.regen_btn.setCursor(Qt.PointingHandCursor)
+        self.regen_btn.setToolTip("Tạo lại video cho prompt đã chọn (double-click để sửa prompt)")
+        self.regen_btn.clicked.connect(self._regenerate_selected)
+        self.regen_btn.setEnabled(False)
+        regen_row.addStretch()
+        regen_row.addWidget(self.regen_btn)
+        queue_l.addLayout(regen_row)
+        
         self.tabs.addTab(queue_w, "📋 Hàng đợi")
         
         # Running tab
@@ -1394,6 +1413,14 @@ class VideoGenTab(QWidget):
             }
             QPushButton:hover { background: #c0392b; }
             QPushButton:disabled { background: #666; color: #999; }
+        """)
+        self.regen_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e67e22, stop:1 #f39c12);
+                color: white; border: none; border-radius: 6px; padding: 6px 14px; font-size: 11px;
+            }
+            QPushButton:hover { background: #f39c12; }
+            QPushButton:disabled { background: #555; color: #888; }
         """)
         
         self.log.setStyleSheet(log_style)
@@ -1869,13 +1896,23 @@ class VideoGenTab(QWidget):
         self.account_prompt_idx = {}
         self.tab_current_idx = {}
         
+        # Failover state: khi prompt fail → đổi account retry
+        self._retry_queue = []  # list of (item, queue_idx, tried_emails_set)
+        self._bad_accounts = set()  # accounts bị 403/lỗi liên tục
+        self._all_accounts = []  # tất cả accounts đã chọn (để failover)
+        self._retry_tried_history = {}  # queue_idx -> set of tried emails (tích lũy)
+        self._started_accounts = set()  # Track accounts đã thực sự start worker
+        
         # Setup queue table — 4 columns: #, Prompt, Ảnh, Trạng thái
         self.queue_table.setRowCount(total)
         for i, item in enumerate(all_items):
             prompt = item[0]
             img_path = item[1]
             self.queue_table.setItem(i, 0, QTableWidgetItem(str(i+1)))
-            self.queue_table.setItem(i, 1, QTableWidgetItem(prompt[:50]))
+            prompt_item = QTableWidgetItem(prompt[:50])
+            # Lưu metadata vào UserRole để dùng cho Tạo Lại
+            prompt_item.setData(Qt.UserRole, item)  # (prompt, image_path, subfolder, stt)
+            self.queue_table.setItem(i, 1, prompt_item)
             # Cột Xem — ban đầu trống, sẽ thêm nút ▶️ khi video download xong
             self.queue_table.setItem(i, 2, QTableWidgetItem(""))
             self.queue_table.setItem(i, 3, QTableWidgetItem(""))
@@ -1920,16 +1957,28 @@ class VideoGenTab(QWidget):
         
         num_tabs = 3  # 3 luồng concurrent per account
         
-        # Distribute items: round-robin cho mỗi account
-        # VD: 9 items, 3 accounts → acc0: [1,4,7], acc1: [2,5,8], acc2: [3,6,9]
+        # Distribute items: sequential chunks (natural sort từ trên xuống)
+        # VD: 9 items, 3 accounts → acc0: [1,2,3], acc1: [4,5,6], acc2: [7,8,9]
         n_acc = len(accounts)
         for acc in accounts:
             self.account_prompts[acc.email] = []
             self.account_prompt_idx[acc.email] = []
-        for i, item in enumerate(all_items):
-            acc = accounts[i % n_acc]
-            self.account_prompts[acc.email].append(item)
-            self.account_prompt_idx[acc.email].append(i)
+        
+        chunk_size = total // n_acc
+        remainder = total % n_acc
+        offset = 0
+        for ai, acc in enumerate(accounts):
+            # Accounts đầu nhận thêm 1 item nếu có dư
+            count = chunk_size + (1 if ai < remainder else 0)
+            for j in range(count):
+                idx = offset + j
+                if idx < total:
+                    self.account_prompts[acc.email].append(all_items[idx])
+                    self.account_prompt_idx[acc.email].append(idx)
+            offset += count
+        
+        # Lưu danh sách accounts để failover
+        self._all_accounts = accounts[:]
         
         total_concurrent = len(accounts) * num_tabs
         self._log(f"🚀 Starting {total} videos ({mode_label})")
@@ -1941,6 +1990,7 @@ class VideoGenTab(QWidget):
         
         # Start one AccountWorker per account — stagger 5s
         self._pending_accounts = []
+        self._pending_stagger_count = 0  # Track accounts chưa start từ stagger timer
         for acc in accounts:
             if self.account_prompts[acc.email]:
                 self._pending_accounts.append((acc, num_tabs))
@@ -1949,12 +1999,18 @@ class VideoGenTab(QWidget):
             acc, tabs = self._pending_accounts.pop(0)
             self._start_account_worker(acc, tabs)
             
+            self._pending_stagger_count = len(self._pending_accounts)
             for i, (acc, tabs) in enumerate(self._pending_accounts):
-                QTimer.singleShot((i + 1) * 5000, lambda a=acc, t=tabs: self._start_account_worker(a, t))
+                QTimer.singleShot((i + 1) * 5000, lambda a=acc, t=tabs: self._stagger_start_worker(a, t))
             self._pending_accounts = []
     
     def _start_account_worker(self, account, num_tabs):
         """Start a multi-tab worker for an account"""
+        # Track account đã thực sự start (để failover không steal account chưa start)
+        if not hasattr(self, '_started_accounts'):
+            self._started_accounts = set()
+        self._started_accounts.add(account.email)
+        
         items = self.account_prompts[account.email]  # list of (prompt, image_path) or (prompt, None)
         
         if not items:
@@ -1991,6 +2047,11 @@ class VideoGenTab(QWidget):
         worker.start()
         
         self._log(f"▶️ [{account.email}] #{idx_list[0]+1}→#{idx_list[-1]+1} ({len(items)} items), {num_tabs} tabs")
+    
+    def _stagger_start_worker(self, account, num_tabs):
+        """Wrapper cho stagger timer — giảm pending count rồi start worker"""
+        self._pending_stagger_count = max(0, getattr(self, '_pending_stagger_count', 1) - 1)
+        self._start_account_worker(account, num_tabs)
     
     def _on_account_status(self, email, msg):
         """Handle status update from account worker.
@@ -2203,8 +2264,8 @@ class VideoGenTab(QWidget):
                 # Skip already processed indices
                 if qi in self._processed_indices:
                     continue
-                # item can be (prompt, image) tuple or str
-                p = item[0] if isinstance(item, tuple) else item
+                # item can be (prompt, image) tuple/list or str
+                p = item[0] if isinstance(item, (tuple, list)) else item
                 if p == task.prompt:
                     idx = qi
                     self._processed_indices.add(qi)
@@ -2284,25 +2345,101 @@ class VideoGenTab(QWidget):
                 
                 self._log(f"✅ [{email[:15]}] #{idx+1} {task.post_id}")
             else:
-                if isinstance(pbar, QProgressBar):
-                    pbar.setValue(100)
-                    pbar.setFormat("❌ Lỗi")
-                    pbar.setStyleSheet("""
-                        QProgressBar {
-                            background: rgba(40, 50, 70, 180);
-                            border: 1px solid rgba(231, 76, 60, 100);
-                            border-radius: 4px;
-                            color: white;
-                            font-size: 10px;
-                            text-align: center;
-                        }
-                        QProgressBar::chunk {
-                            background: #e74c3c;
-                            border-radius: 3px;
-                        }
-                    """)
-                self.failed_prompts.append(task)
-                self._log(f"❌ [{email[:15]}] #{idx+1} {(task.error_message or '')[:30]}")
+                # === FAILOVER LOGIC: đưa vào retry_queue thay vì đánh dấu failed ngay ===
+                if hasattr(self, '_retry_queue') and hasattr(self, '_all_accounts') and self._all_accounts:
+                    # Lấy original item từ queue table UserRole
+                    original_item = None
+                    if idx >= 0:
+                        prompt_item_widget = self.queue_table.item(idx, 1)
+                        if prompt_item_widget:
+                            original_item = prompt_item_widget.data(Qt.UserRole)
+                    if not original_item:
+                        original_item = (task.prompt, task.image_path, None, idx + 1)
+                    
+                    # Tìm set accounts đã thử prompt này (tích lũy từ các lần retry trước)
+                    tried = {email}
+                    if hasattr(self, '_retry_tried_history') and idx in self._retry_tried_history:
+                        tried |= self._retry_tried_history[idx]
+                    if not hasattr(self, '_retry_tried_history'):
+                        self._retry_tried_history = {}
+                    self._retry_tried_history[idx] = tried
+                    
+                    # Giới hạn max 5 lần failover per prompt — tránh loop vô hạn
+                    max_failover = min(5, len(self._all_accounts))
+                    
+                    # Kiểm tra còn account nào chưa thử + chưa vượt max failover
+                    available = [a for a in self._all_accounts if a.email not in tried] if len(tried) < max_failover else []
+                    
+                    if available:
+                        # Còn account khác → đưa vào retry_queue, KHÔNG đánh dấu failed
+                        self._retry_queue.append((original_item, idx, tried))
+                        # Undo processed để có thể match lại khi retry
+                        self._processed_indices.discard(idx)
+                        # Update progress bar → chờ đổi account
+                        if isinstance(pbar, QProgressBar):
+                            pbar.setValue(0)
+                            pbar.setFormat("🔄 Đổi acc...")
+                            pbar.setStyleSheet("""
+                                QProgressBar {
+                                    background: rgba(40, 50, 70, 180);
+                                    border: 1px solid rgba(243, 156, 18, 100);
+                                    border-radius: 4px;
+                                    color: white;
+                                    font-size: 10px;
+                                    text-align: center;
+                                }
+                                QProgressBar::chunk {
+                                    background: #f39c12;
+                                    border-radius: 3px;
+                                }
+                            """)
+                        self._log(f"🔄 [{email[:15]}] #{idx+1} lỗi → chờ đổi account ({(task.error_message or '')[:40]})")
+                        # Thử dispatch ngay nếu có account rảnh
+                        self._dispatch_retry_queue()
+                        # Không update progress count (chưa phải final)
+                        return
+                    else:
+                        # Hết account khả dụng → đánh dấu failed thật sự
+                        if isinstance(pbar, QProgressBar):
+                            pbar.setValue(100)
+                            pbar.setFormat("❌ Lỗi")
+                            pbar.setStyleSheet("""
+                                QProgressBar {
+                                    background: rgba(40, 50, 70, 180);
+                                    border: 1px solid rgba(231, 76, 60, 100);
+                                    border-radius: 4px;
+                                    color: white;
+                                    font-size: 10px;
+                                    text-align: center;
+                                }
+                                QProgressBar::chunk {
+                                    background: #e74c3c;
+                                    border-radius: 3px;
+                                }
+                            """)
+                        self.failed_prompts.append(task)
+                        self._log(f"❌ [{email[:15]}] #{idx+1} hết account khả dụng — {(task.error_message or '')[:30]}")
+                else:
+                    # Không có failover state → fallback cũ
+                    if isinstance(pbar, QProgressBar):
+                        pbar.setValue(100)
+                        pbar.setFormat("❌ Lỗi")
+                        pbar.setStyleSheet("""
+                            QProgressBar {
+                                background: rgba(40, 50, 70, 180);
+                                border: 1px solid rgba(231, 76, 60, 100);
+                                border-radius: 4px;
+                                color: white;
+                                font-size: 10px;
+                                text-align: center;
+                            }
+                            QProgressBar::chunk {
+                                background: #e74c3c;
+                                border-radius: 3px;
+                            }
+                        """)
+                    self.failed_prompts.append(task)
+                    self._log(f"❌ [{email[:15]}] #{idx+1} {(task.error_message or '')[:30]}")
         
         # Update progress bar
         done_count = len(self.completed_prompts) + len(self.failed_prompts)
@@ -2333,14 +2470,26 @@ class VideoGenTab(QWidget):
                 self.run_table.removeRow(i)
                 break
         
-        # Clean up worker
+        # Clean up worker — dùng deleteLater() tránh crash "QThread destroyed while running"
         if email in self.account_workers:
-            del self.account_workers[email]
+            worker = self.account_workers.pop(email)
+            worker.deleteLater()
         
         self._log(f"🏁 [{email}] Finished")
         
-        # Check if all workers are done
-        if not self.account_workers:
+        # Thử dispatch retry queue cho account vừa rảnh
+        if hasattr(self, '_retry_queue') and self._retry_queue:
+            dispatched = self._dispatch_retry_queue()
+            if dispatched:
+                return  # Đã start worker mới, chưa kết thúc
+        
+        # Check if all workers are done (kể cả accounts chờ stagger timer)
+        pending_stagger = getattr(self, '_pending_stagger_count', 0)
+        if not self.account_workers and pending_stagger <= 0:
+            # Kiểm tra retry_queue lần cuối — nếu còn item thì đánh dấu failed
+            if hasattr(self, '_retry_queue') and self._retry_queue:
+                self._finalize_retry_queue()
+            
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
             self._elapsed_timer.stop()
@@ -2354,19 +2503,161 @@ class VideoGenTab(QWidget):
             if failed == 0:
                 self.progress_status.setText(f"🎉 Hoàn thành tất cả! {done} video")
             else:
-                self.progress_status.setText(f"� Xong: {done} thành công, {failed} lỗi")
+                self.progress_status.setText(f"⚠️ Xong: {done} thành công, {failed} lỗi")
             
             self._log(f"🎉 All done! {done} OK, {failed} failed")
+    
+    def _dispatch_retry_queue(self):
+        """Giao prompt lỗi cho account rảnh (failover).
+        
+        Tìm account chưa bị bad + chưa đang chạy → start worker mới.
+        Returns True nếu đã start worker mới.
+        """
+        if not self._retry_queue:
+            return False
+        
+        # Tìm accounts rảnh: đã start xong + không đang chạy worker
+        # QUAN TRỌNG: chỉ dùng account đã thực sự start & finish,
+        # tránh steal account còn chờ trong stagger timer
+        started = getattr(self, '_started_accounts', set())
+        available = []
+        for acc in self._all_accounts:
+            if acc.email not in self.account_workers and acc.email in started:
+                available.append(acc)
+        
+        if not available:
+            # Không có account rảnh lúc này — sẽ thử lại khi account khác finish
+            return False
+        
+        # Phân bổ retry items cho các account rảnh
+        items_to_dispatch = []
+        remaining = []
+        for item, qi, tried in self._retry_queue:
+            # Tìm account chưa thử prompt này
+            acc_for_item = None
+            for acc in available:
+                if acc.email not in tried:
+                    acc_for_item = acc
+                    break
+            if acc_for_item:
+                items_to_dispatch.append((item, qi, tried, acc_for_item))
+            else:
+                remaining.append((item, qi, tried))
+        
+        self._retry_queue = remaining
+        
+        if not items_to_dispatch:
+            # Tất cả retry items đã thử hết accounts khả dụng
+            if not self.account_workers:
+                self._finalize_retry_queue()
+            return False
+        
+        # Group theo account
+        from collections import defaultdict
+        acc_items = defaultdict(list)
+        acc_indices = defaultdict(list)
+        for item, qi, tried, acc in items_to_dispatch:
+            acc_items[acc.email].append(item)
+            acc_indices[acc.email].append(qi)
+            # Cập nhật tried set trong retry_queue (nếu fail lại sẽ biết)
+            tried.add(acc.email)
+        
+        # Start worker cho mỗi account
+        from ..core.models import VideoSettings
+        aspect = self.aspect_combo.currentText()
+        length = int(self.length_combo.currentText().split()[0])
+        resolution = self.resolution_combo.currentText()
+        settings = VideoSettings(aspect_ratio=aspect, video_length=length, resolution=resolution)
+        
+        for acc in available:
+            if acc.email not in acc_items:
+                continue
+            items = acc_items[acc.email]
+            indices = acc_indices[acc.email]
+            
+            # Cập nhật mapping cho _on_task_completed
+            self.account_prompts[acc.email] = items
+            self.account_prompt_idx[acc.email] = indices
+            
+            self._log(f"🔄 [{acc.email[:20]}] Nhận {len(items)} prompt retry (failover)")
+            
+            # Add to running table
+            row = self.run_table.rowCount()
+            self.run_table.insertRow(row)
+            self.run_table.setItem(row, 0, QTableWidgetItem(acc.email))
+            self.run_table.setItem(row, 1, QTableWidgetItem(f"🔄 Retry {len(items)} items"))
+            self.run_table.setItem(row, 2, QTableWidgetItem(f"Khởi tạo..."))
+            
+            worker = APIAccountWorker(
+                acc, items, settings, self._output_dir,
+                num_tabs=min(len(items), 3),
+                headless=True
+            )
+            worker.status_update.connect(self._on_account_status)
+            worker.task_completed.connect(self._on_task_completed)
+            worker.step_progress.connect(self._on_step_progress)
+            worker.all_finished.connect(self._on_account_finished)
+            
+            self.account_workers[acc.email] = worker
+            worker.start()
+        
+        return True  # Đã dispatch thành công
+    
+    def _finalize_retry_queue(self):
+        """Đánh dấu tất cả items còn trong retry_queue là failed thật sự."""
+        from ..core.models import VideoTask
+        for item, qi, tried in self._retry_queue:
+            prompt = item[0] if isinstance(item, (tuple, list)) else item
+            image_path = item[1] if isinstance(item, (tuple, list)) and len(item) > 1 else None
+            
+            failed_task = VideoTask(
+                account_email="failover",
+                prompt=prompt,
+                image_path=image_path,
+                settings=None,
+                status="failed",
+                error_message=f"Hết account khả dụng (đã thử {len(tried)} acc)",
+            )
+            self.failed_prompts.append(failed_task)
+            
+            # Update progress bar
+            if qi >= 0 and qi < self.queue_table.rowCount():
+                pbar = self.queue_table.cellWidget(qi, 3)
+                if isinstance(pbar, QProgressBar):
+                    pbar.setValue(100)
+                    pbar.setFormat("❌ Hết acc")
+                    pbar.setStyleSheet("""
+                        QProgressBar {
+                            background: rgba(40, 50, 70, 180);
+                            border: 1px solid rgba(231, 76, 60, 100);
+                            border-radius: 4px;
+                            color: white;
+                            font-size: 10px;
+                            text-align: center;
+                        }
+                        QProgressBar::chunk {
+                            background: #e74c3c;
+                            border-radius: 3px;
+                        }
+                    """)
+            self._log(f"❌ #{qi+1} hết account — đã thử {len(tried)} acc: {', '.join(e[:15] for e in tried)}")
+        
+        self._retry_queue.clear()
     
     def _stop(self):
         """Stop all account workers"""
         for worker in self.account_workers.values():
             worker.stop()
+            worker.deleteLater()
         self.account_workers.clear()
         self.run_table.setRowCount(0)
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self._elapsed_timer.stop()
+        
+        # Clear retry queue khi stop
+        if hasattr(self, '_retry_queue'):
+            self._retry_queue.clear()
         
         # Reset progress
         done = len(self.completed_prompts)
@@ -2381,7 +2672,13 @@ class VideoGenTab(QWidget):
         self.stat_total.set_value(len(self.prompt_queue))
         self.stat_running.set_value(len(self.account_workers))
         self.stat_done.set_value(len(self.completed_prompts))
-        self.stat_failed.set_value(len(self.failed_prompts))
+        # Hiển thị failed + retry pending
+        retry_count = len(self._retry_queue) if hasattr(self, '_retry_queue') else 0
+        failed_count = len(self.failed_prompts)
+        if retry_count > 0:
+            self.stat_failed.set_value(f"{failed_count}+{retry_count}🔄")
+        else:
+            self.stat_failed.set_value(failed_count)
     
     def _update_elapsed(self):
         """Update elapsed time display"""
@@ -2437,6 +2734,163 @@ class VideoGenTab(QWidget):
             return
         dialog = VideoPreviewDialog(video_path, self)
         dialog.exec()
+
+    def _on_queue_double_click(self, row, col):
+        """Double-click cột Prompt (col=1) để sửa inline."""
+        if col != 1:
+            return
+        item = self.queue_table.item(row, col)
+        if not item:
+            return
+        # Cho phép edit tạm thời
+        item.setFlags(item.flags() | Qt.ItemIsEditable)
+        self.queue_table.editItem(item)
+        # Enable nút Tạo Lại khi có row được chọn
+        self.regen_btn.setEnabled(True)
+
+    def _regenerate_selected(self):
+        """Tạo lại video cho các prompt đã chọn trong queue table."""
+        rows = set()
+        for item in self.queue_table.selectedItems():
+            rows.add(item.row())
+        
+        if not rows:
+            QMessageBox.warning(self, "Lỗi", "Chọn prompt cần tạo lại")
+            return
+        
+        # Kiểm tra đang chạy không
+        if self.account_workers:
+            QMessageBox.warning(self, "Lỗi", "Đang tạo video, vui lòng đợi hoàn tất")
+            return
+        
+        # Lấy account đã đăng nhập
+        accounts = [a for a in self.account_manager.get_all_accounts() if a.status == "logged_in"]
+        if not accounts:
+            QMessageBox.warning(self, "Lỗi", "Không có tài khoản đã đăng nhập")
+            return
+        
+        # Build lại items từ queue table
+        regen_items = []
+        regen_rows = []
+        for row in sorted(rows):
+            prompt_item = self.queue_table.item(row, 1)
+            if not prompt_item:
+                continue
+            # Lấy prompt text hiện tại (có thể đã sửa)
+            prompt_text = prompt_item.text().strip()
+            if not prompt_text:
+                continue
+            # Lấy metadata gốc
+            meta = prompt_item.data(Qt.UserRole)
+            if meta and isinstance(meta, (tuple, list)):
+                # Dùng prompt text mới, giữ nguyên image_path/subfolder/stt
+                item = (prompt_text, meta[1], meta[2], meta[3])
+            else:
+                item = (prompt_text, None, None, row + 1)
+            regen_items.append(item)
+            regen_rows.append(row)
+        
+        if not regen_items:
+            return
+        
+        self._log(f"🔄 Tạo lại {len(regen_items)} prompt...")
+        
+        # Xóa video cũ cùng stt prefix (để file mới thay thế)
+        for item in regen_items:
+            subfolder = item[2]
+            stt = item[3]
+            base = Path(self._output_dir)
+            if subfolder:
+                base = base / subfolder
+            if base.exists():
+                import glob
+                pattern = str(base / f"{stt:03d}_*.mp4")
+                for old_file in glob.glob(pattern):
+                    try:
+                        os.remove(old_file)
+                        self._log(f"🗑️ Xóa video cũ: {os.path.basename(old_file)}")
+                    except Exception:
+                        pass
+        
+        # Reset progress cho các row được chọn
+        for row in regen_rows:
+            pbar = self.queue_table.cellWidget(row, 3)
+            if isinstance(pbar, QProgressBar):
+                pbar.setValue(0)
+                pbar.setFormat("🔄 Tạo lại...")
+                pbar.setStyleSheet("""
+                    QProgressBar {
+                        background: rgba(40, 50, 70, 180);
+                        border: 1px solid rgba(100, 150, 255, 50);
+                        border-radius: 4px;
+                        color: white;
+                        font-size: 10px;
+                        text-align: center;
+                    }
+                    QProgressBar::chunk {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3498db, stop:1 #2ecc71);
+                        border-radius: 3px;
+                    }
+                """)
+            # Xóa nút preview cũ
+            self.queue_table.setCellWidget(row, 2, None)
+            self.queue_table.setItem(row, 2, QTableWidgetItem(""))
+            # Cập nhật prompt text trong metadata
+            prompt_item = self.queue_table.item(row, 1)
+            if prompt_item:
+                new_meta = regen_items[regen_rows.index(row)]
+                prompt_item.setData(Qt.UserRole, new_meta)
+        
+        # Xóa các row khỏi processed set để có thể match lại
+        if hasattr(self, '_processed_indices'):
+            for row in regen_rows:
+                self._processed_indices.discard(row)
+        if hasattr(self, '_mapped_queue_indices'):
+            for row in regen_rows:
+                self._mapped_queue_indices.discard(row)
+        
+        # Dùng account đầu tiên, settings hiện tại
+        account = accounts[0]
+        aspect = self.aspect_combo.currentText()
+        length = int(self.length_combo.currentText().split()[0])
+        resolution = self.resolution_combo.currentText()
+        
+        from ..core.models import VideoSettings
+        settings = VideoSettings(aspect_ratio=aspect, video_length=length, resolution=resolution)
+        
+        # Tạo mapping cho regen worker
+        self.account_prompts[account.email] = regen_items
+        self.account_prompt_idx[account.email] = regen_rows
+        
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.regen_btn.setEnabled(False)
+        
+        # Start worker
+        worker = APIAccountWorker(
+            account, regen_items, settings, self._output_dir,
+            num_tabs=min(len(regen_items), 3),
+            headless=True
+        )
+        worker.status_update.connect(self._on_account_status)
+        worker.task_completed.connect(self._on_task_completed)
+        worker.step_progress.connect(self._on_step_progress)
+        worker.all_finished.connect(self._on_regen_finished)
+        
+        self.account_workers[account.email] = worker
+        worker.start()
+        
+        self._log(f"🔄 [{account.email[:20]}] Tạo lại {len(regen_items)} video...")
+
+    def _on_regen_finished(self, email):
+        """Handle khi regeneration worker hoàn tất."""
+        if email in self.account_workers:
+            del self.account_workers[email]
+        
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.regen_btn.setEnabled(True)
+        self._log(f"🏁 Tạo lại hoàn tất [{email[:20]}]")
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")

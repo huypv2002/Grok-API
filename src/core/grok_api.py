@@ -266,9 +266,20 @@ class GrokAPI:
         """
         self._log(f"📤 Step 1: Creating media post...", on_status)
 
+        # Sanitize prompt: loại bỏ ký tự gây lỗi protobuf parse
+        clean_prompt = prompt.strip()
+        # Loại bỏ prefix dạng [Scene 1], [1], ["text"] etc.
+        import re
+        # Strip leading bracket patterns: [anything] hoặc ["..."]
+        clean_prompt = re.sub(r'^\[.*?\]\s*', '', clean_prompt).strip()
+        # Escape ký tự đặc biệt protobuf: loại bỏ standalone [ ] " ở đầu/cuối
+        clean_prompt = clean_prompt.strip('["]\' ')
+        if not clean_prompt:
+            clean_prompt = prompt.strip()  # fallback nếu strip hết
+
         payload = {
             "mediaType": "MEDIA_POST_TYPE_VIDEO",
-            "prompt": prompt,
+            "prompt": clean_prompt,
         }
 
         for attempt in range(1, max_retries + 1):
@@ -537,7 +548,14 @@ class GrokAPI:
             message = f"https://assets.grok.com/users/{user_id}/{file_attachment_id}/content  --mode=normal"
         else:
             # Text mode: prompt + --mode=custom
-            message = prompt if "--mode=custom" in prompt else f"{prompt} --mode=custom"
+            # Sanitize: loại bỏ ký tự gây lỗi protobuf parse
+            import re
+            clean_p = prompt.strip()
+            clean_p = re.sub(r'^\[.*?\]\s*', '', clean_p).strip()
+            clean_p = clean_p.strip('["]\' ')
+            if not clean_p:
+                clean_p = prompt.strip()
+            message = clean_p if "--mode=custom" in clean_p else f"{clean_p} --mode=custom"
 
         payload = {
             "temporary": True,

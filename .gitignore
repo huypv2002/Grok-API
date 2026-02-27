@@ -25,7 +25,13 @@ hotmails*.txt
 tools/*output*
 tools/*parsed*
 tools/credit_cards*
+tools/credits_card*
 tools/test_*.py
+tools/account.txt
+tools/grok_accounts_*.txt
+tools/grok_trial_cli.py
+tools/trial_state.json
+tools/element_captcha.html
 
 # IDE
 .idea/
@@ -40,3 +46,13 @@ Thumbs.db
 # Test files
 test_*.mp4
 *.log
+
+# Misc
+1python
+hcaptcha-click-solver/
+data/cf_clearance_cache.json
+data/settings.json
+data/accounts.json
+data/.machine_id
+_update_tmp/
+_updater.bat
